@@ -47,3 +47,4 @@ jobs:
           VERSION=${{ steps.meta.outputs.version }}
         cache-from: type=gha # Use GitHub Actions cache for faster builds
         cache-to: type=gha,mode=max # Store build cache in GitHub Actions
+        provenance: false # allow included healthcheck
