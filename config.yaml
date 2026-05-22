@@ -1,0 +1,31 @@
+# MQTT Broker Einstellungen
+mqtt:
+  broker: "localhost"      # MQTT Broker Hostname/IP
+  port: 1883
+  username: ""             # optional
+  password: ""             # optional
+  client_id: "selve2mqtt"
+  discovery_prefix: "homeassistant"   # für Home Assistant MQTT Discovery
+
+# Selve USB-RF Gateway
+selve:
+  port: "/dev/ttyUSB0"     # USB-Serial Port
+  open_close_fix: false    # true: 0-1% -> 0% / 99-100% -> 100% (pos. Korrektur)
+  min_firmware_version: "2.0.0" # Mindestversion für den Firmware-Check
+# firmware_url: "https://raw.githubusercontent.com/user/repo/main/selve_fw.json" # Optional: URL for latest firmware version
+
+# General Settings
+logging:
+  level: "DEBUG"            # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+language: "de"             # de, en
+
+discovery_interval: 60      # Sekunden zwischen erneuten Discovery-Durchläufen (0 = deaktiviert)
+update_interval: 30         # Sekunden zwischen Zustands-Updates aller Geräte
+
+dashboard_token: "secret"
+
+# Webserver (FastAPI)
+web:
+  host: "0.0.0.0"
+  port: 8000

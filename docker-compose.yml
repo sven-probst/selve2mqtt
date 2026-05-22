@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  selve2mqtt:
+    build: .
+    container_name: selve2mqtt
+    restart: unless-stopped
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"   # USB-RF Stick durchreichen
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - TZ=Europe/Berlin
