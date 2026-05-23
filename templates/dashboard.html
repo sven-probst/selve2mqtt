@@ -100,7 +100,7 @@
         <div class="modal-content">
             <div class="modal-header"><h3>Authentication Required</h3></div>       
             <p>Please enter your access token:</p>
-            <input type="password" id="token-input" class="auth-input" placeholder="Enter token...">
+            <input type="password" id="token-input" class="auth-input" placeholder="Enter token..." onkeyup="if(event.key === 'Enter') login()">
             <div id="auth-error" style="color:#dc3545; display:none; margin-top:10px;">Invalid token, please try again</div>
             <div class="modal-footer">
                 <button onclick="login()">Login</button>

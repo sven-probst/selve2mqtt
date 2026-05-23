@@ -42,6 +42,90 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
    python selve2mqtt.py
    ```
 
+### Docker / Podman
+
+The bridge is available as a Docker image. You need to map your configuration file and the serial device of the USB stick into the container.
+
+#### Docker Compose
+
+Create a `docker-compose.yml` file:
+
+```yaml
+services:
+  selve2mqtt:
+    image: ghcr.io/sven-probst/selve2mqtt:latest
+    container_name: selve2mqtt
+    restart: unless-stopped
+    # Persistent device path (check /dev/serial/by-id/)
+    devices:
+      - "/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_DM01F387-if00-port0:/dev/tty-selve"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      # Required for serial device metadata and stable paths
+      - /run/udev:/run/udev:ro
+      - /dev/serial:/dev/serial:ro
+    ports:
+      - "8080:8080"
+    group_add:
+      - dialout
+    security_opt:
+      - label:disable
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+```
+
+Run it with:
+```bash
+docker compose up -d
+```
+
+#### Podman Quadlet (Recommended for Fedora/RHEL/CoreOS)
+
+Create a file named `selve2mqtt.container` in `~/.config/containers/systemd/` (for rootless) or `/etc/containers/systemd/` (for system-wide):
+
+```ini
+[Unit]
+Description=Selve2MQTT Bridge
+After=network-online.target
+
+[Container]
+Image=ghcr.io/sven-probst/selve2mqtt:latest
+ContainerName=selve2mqtt
+# Persistent device path (check /dev/serial/by-id/)
+AddDevice=/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_DM01F387-if00-port0:/dev/tty-selve
+Volume=%h/selve2mqtt/config.yaml:/app/config.yaml:ro
+# Required for serial device metadata and stable paths
+Volume=/run/udev:/run/udev:ro
+Volume=/dev/serial:/dev/serial:ro
+PublishPort=8080:8080
+
+# Permissions for serial access
+GroupAdd=dialout
+SecurityLabelDisable=true
+
+[Service]
+Restart=always
+
+# Healthcheck using the internal API
+HealthCmd=curl -f http://localhost:8080/health || exit 1
+HealthInterval=30s
+HealthTimeout=10s
+HealthStartPeriod=15s
+
+[Install]
+WantedBy=default.target
+```
+
+Then reload systemd and start the service:
+```bash
+systemctl --user daemon-reload
+systemctl --user start selve2mqtt
+```
+
 ## Configuration
 
 The `config.yaml` file allows you to configure your MQTT broker and gateway settings. Key settings include:

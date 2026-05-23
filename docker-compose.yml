@@ -1,15 +1,25 @@
-version: '3'
-
 services:
   selve2mqtt:
     build: .
     container_name: selve2mqtt
     restart: unless-stopped
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0"   # USB-RF Stick durchreichen
+      - "/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_DM01F387-if00-port0:/dev/tty-selve"
     ports:
-      - "8000:8000"
+      - "8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - /run/udev:/run/udev:ro
+      - /dev/serial:/dev/serial:ro
     environment:
       - TZ=Europe/Berlin
+    group_add:
+      - dialout
+    security_opt:
+      - label:disable
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
