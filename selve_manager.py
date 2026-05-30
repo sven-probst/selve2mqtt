@@ -686,7 +686,7 @@ class SelveManager:
             self.mqtt.publish(f"selve/{dev_id}/position", current_state.position, retain=True)
         if current_state.rssi is not None:
             self.mqtt.publish(f"selve/{dev_id}/rssi", current_state.rssi, retain=True)
-        self.mqtt.publish(f"selve/{dev_id}/unreachable", "ON" if current_state.unreachable else "OFF", retain=True)
+        self.mqtt.publish(f"selve/{dev_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
         self.mqtt.publish(f"selve/{dev_id}/state", props_dict, retain=True)
 
         self.log.info('update_received', id=dev_id, pos=current_state.position)
@@ -916,7 +916,7 @@ class SelveManager:
             if current_state.rssi is not None:
                 self.mqtt.publish(f"selve/{device_id}/rssi", current_state.rssi, retain=True)
 
-            self.mqtt.publish(f"selve/{device_id}/unreachable", "ON" if current_state.unreachable else "OFF", retain=True)
+            self.mqtt.publish(f"selve/{device_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
 
             self.mqtt.publish(f"selve/{device_id}/state", props_dict, retain=True)
 
