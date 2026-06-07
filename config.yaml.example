@@ -1,0 +1,30 @@
+# MQTT Broker Settings
+mqtt:
+  broker: "localhost"      # MQTT Broker Hostname/IP
+  port: 1883
+  username: ""             # optional
+  password: ""             # optional
+  client_id: "selve2mqtt"
+  discovery_prefix: "homeassistant"   # for Home Assistant MQTT Discovery
+
+# Selve USB-RF Gateway
+selve:
+  port: "/dev/ttyUSB0"     # USB-Serial Port
+  open_close_fix: false    # true: 0-1% -> 0% / 99-100% -> 100% (pos. correction)
+  min_firmware_version: "2.0.0"
+
+# General Settings
+logging:
+  level: "INFO"            # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+language: "de"             # de, en
+
+discovery_interval: 60      # Seconds between discovery runs (0 = disabled)
+update_interval: 30         # Seconds between state updates
+
+dashboard_token: ""         # Set a token to enable dashboard authentication
+
+# Webserver (FastAPI)
+web:
+  host: "0.0.0.0"
+  port: 8080
