@@ -13,7 +13,7 @@ COPY requirements.txt .
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends curl
+    apt-get update && apt-get install -y --no-install-recommends curl build-essential
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt

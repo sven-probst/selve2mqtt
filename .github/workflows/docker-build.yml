@@ -8,6 +8,10 @@ on:
     tags:
       - '*.*'
 
+# Opt into Node.js 24 for all javascript actions to avoid deprecation warnings
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -40,7 +44,7 @@ jobs:
           type=ref,event=tag # Tag with Git tags (e.g., v1.0.0)
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v6
       with:
         context: . # Build from the current directory
         # Build for multiple architectures (AMD64 and ARM for Raspberry Pi)
