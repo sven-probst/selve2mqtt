@@ -19,7 +19,6 @@ TRANSLATIONS = {
             "header_sensors": "Sensoren",
             "status": "Status",
             "pos": "Position",
-            "rssi": "RSSI",
             "btn_open": "Öffnen",
             "btn_stop": "Stop",
             "btn_close": "Schließen",
@@ -53,7 +52,6 @@ TRANSLATIONS = {
             "learning_finished": "Beendet.",
             "alert_id_name_required": "ID und Name erforderlich!",
             "lbl_group_id": "ID (0-63):",
-            "unit_dbm": "dBm",
             "status_ok": "OK",
             "status_blocked": "BLOCKIERT"
         },
@@ -152,7 +150,6 @@ TRANSLATIONS = {
             "header_sensors": "Sensors",
             "status": "Status",
             "pos": "Position",
-            "rssi": "RSSI",
             "btn_open": "Open",
             "btn_stop": "Stop",
             "btn_close": "Close",
@@ -186,7 +183,6 @@ TRANSLATIONS = {
             "learning_finished": "Done.",
             "alert_id_name_required": "ID and name required!",
             "lbl_group_id": "ID (0-63):",
-            "unit_dbm": "dBm",
             "status_ok": "OK",
             "status_blocked": "BLOCKED"
         },

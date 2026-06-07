@@ -6,7 +6,7 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 
 - **MQTT Discovery:** Automatic integration into Home Assistant (Covers, Sensors, and Diagnostic switches).
 - **Web Dashboard:** A built-in web interface for device management, pairing (learning mode), and renaming.
-- **Commeo Support:** Bi-directional communication (position feedback, RSSI, status flags).
+- **Commeo Support:** Bi-directional communication (position feedback, status flags).
 - **Iveo Support:** Basic uni-directional control.
 - **Group Control:** Support for Selve hardware groups.
 - **Gateway Diagnostics:** Monitoring of the Gateway Duty Cycle and system health.
@@ -139,7 +139,7 @@ The `config.yaml` file allows you to configure your MQTT broker and gateway sett
 ### Home Assistant
 If your Home Assistant instance has MQTT Discovery enabled, your Selve devices will appear automatically as **Cover** entities. 
 - **Positioning:** Supports setting and reporting position (0-100%).
-- **Attributes:** RSSI, connectivity status, and error flags (obstructed, overload) are available as diagnostic sensors.
+- **Attributes:** Connectivity status and error flags (obstructed, overload) are available as diagnostic sensors.
 
 ### Other Systems (openHAB, Node-RED, etc.)
 You can interact with the bridge using standard MQTT topics:
@@ -156,7 +156,6 @@ You can interact with the bridge using standard MQTT topics:
 | Topic | Payload | Description |
 | :--- | :--- | :--- |
 | `selve/<device_id>/position` | `0-100` | Current position (0=closed, 100=open) |
-| `selve/<device_id>/rssi` | `dBm` | Signal strength |
 | `selve/<device_id>/unreachable` | `ON`, `OFF` | Connection status |
 | `selve/status` | `online`, `offline` | Bridge status (LWT) |
 

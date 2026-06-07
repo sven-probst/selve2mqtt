@@ -12,10 +12,6 @@
         .delete-btn { background-color: #dc3545; }
         .delete-btn:hover { background-color: #c82333; }
         .pos { font-weight: bold; color: #28a745; }
-        .rssi { font-style: italic; color: #6c757d; font-size: 0.9em; }
-        .rssi-good { color: #28a745 !important; font-weight: bold; }
-        .rssi-fair { color: #fd7e14 !important; font-weight: bold; }
-        .rssi-poor { color: #dc3545 !important; font-weight: bold; }
         .status-online { color: #28a745; font-weight: bold; }
         .status-offline { color: #dc3545; font-weight: bold; }
         .sender-list { display: none; margin-top: 10px; font-size: 0.85em; background: #f8f9fa; padding: 10px; border: 1px dashed #ccc; border-radius: 4px; }
@@ -42,7 +38,6 @@
             button { padding: 12px 14px; font-size: 16px; }
             .modal-content { width: 95%; margin: 8% auto; }
             .device-selection { max-height: 200px; }
-            .rssi { display: block; margin-top: 6px; }
         }
     </style>
 </head>
@@ -193,7 +188,6 @@
                     <div class="device" id="dev-${id}">
                         <strong>${dev.name} (ID: ${id})</strong> 
                         [<span class="pos" id="pos-${id}">${dev.position}%</span>]
-                        <span class="rssi" id="rssi-${id}">${dev.rssi !== null && dev.rssi !== undefined ? dev.rssi + ' ' + i18n.unit_dbm : 'N/A'}</span>
                         <br>
                         <button onclick="sendCommand('${id}', 'open')">${i18n.btn_open}</button>
                         <button onclick="sendCommand('${id}', 'stop')">${i18n.btn_stop}</button>
@@ -291,8 +285,6 @@
         function updateDeviceUI(dev) {
             const posEl = document.getElementById(`pos-${dev.id}`);
             if (posEl) posEl.innerText = dev.position + '%';
-            const rssiEl = document.getElementById(`rssi-${dev.id}`);
-            if (rssiEl) rssiEl.innerText = (dev.rssi !== null && dev.rssi !== undefined ? dev.rssi + ' ' + (i18n.unit_dbm || 'dBm') : 'N/A');
             // Update slider only when not actively dragged by the user
             const sliderEl = document.getElementById(`slider-${dev.id}`);
             if (sliderEl && document.activeElement !== sliderEl) {

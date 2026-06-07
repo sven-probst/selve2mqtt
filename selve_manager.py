@@ -64,7 +64,6 @@ class DeviceState:
     position: Optional[int]
     moving: bool
     name: str
-    rssi: Optional[int]
     unreachable: bool
     obstructed: bool
     overload: bool
@@ -241,7 +240,6 @@ class SelveManager:
             position=self._to_ha_position(selve_raw),
             moving=getattr(device, 'state', None) in (MovementState.UP_ON, MovementState.DOWN_ON),
             name=self._get_attr(device, 'name', f"Aktor {dev_id}"),
-            rssi=self._get_attr(device, 'rssi'),
             unreachable=self._get_attr(device, 'unreachable', False),
             obstructed=self._get_attr(device, 'obstructed', False),
             overload=self._get_attr(device, 'overload', False),
@@ -385,19 +383,6 @@ class SelveManager:
                     "position_open": 100,
                     "position_closed": 0
                 })
-
-                # Signal Strength (RSSI) Sensor Discovery
-                rssi_topic = f"{self.mqtt.discovery_prefix}/sensor/selve_{dev_id}_rssi/config"
-                rssi_cfg = {
-                    "name": f"{friendly_name} Signal Strength",
-                    "unique_id": f"selve_device_{dev_id}_rssi",
-                    "state_topic": f"selve/{dev_id}/rssi",
-                    "unit_of_measurement": "dBm",
-                    "device_class": "signal_strength",
-                    "entity_category": "diagnostic",
-                    "device": cfg["device"]
-                }
-                self.mqtt.publish(rssi_topic, rssi_cfg, retain=True)
 
                 # Connectivity (Unreachable) Sensor Discovery
                 unreach_topic = f"{self.mqtt.discovery_prefix}/binary_sensor/selve_{dev_id}_unreachable/config"
@@ -684,8 +669,6 @@ class SelveManager:
         # Publish MQTT
         if current_state.position is not None:
             self.mqtt.publish(f"selve/{dev_id}/position", current_state.position, retain=True)
-        if current_state.rssi is not None:
-            self.mqtt.publish(f"selve/{dev_id}/rssi", current_state.rssi, retain=True)
         self.mqtt.publish(f"selve/{dev_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
         self.mqtt.publish(f"selve/{dev_id}/state", props_dict, retain=True)
 
@@ -693,7 +676,7 @@ class SelveManager:
         if self.active_websockets:
             asyncio.run_coroutine_threadsafe(self.broadcast_ws(dev_id, **props_dict), self.loop)
 
-    async def broadcast_ws(self, dev_id, position, moving, rssi, unreachable, obstructed, overload, **kwargs):
+    async def broadcast_ws(self, dev_id, position, moving, unreachable, obstructed, overload, **kwargs):
         for ws in list(self.active_websockets):
             try:
                 await ws.send_json({
@@ -701,7 +684,6 @@ class SelveManager:
                     "id": dev_id,
                     "position": position,
                     "moving": moving,
-                    "rssi": rssi,
                     "unreachable": unreachable,
                     "obstructed": obstructed,
                     "overload": overload
@@ -913,8 +895,6 @@ class SelveManager:
             self._state_cache[device_id] = current_state
             props_dict = asdict(current_state)
             self.mqtt.publish(f"selve/{device_id}/position", current_state.position, retain=True)
-            if current_state.rssi is not None:
-                self.mqtt.publish(f"selve/{device_id}/rssi", current_state.rssi, retain=True)
 
             self.mqtt.publish(f"selve/{device_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
 
@@ -926,9 +906,9 @@ class SelveManager:
             logger.error(f"State publish error for {device_id}: {e}")
 
     async def update_all(self):
-        """Periodic update task: refreshes device values including RSSI."""
+        """Periodic update task: refreshes device values."""
         try:
-            # Refresh all device values explicitly to get current RSSI and position
+            # Refresh all device values explicitly to get current position
             for dev_id, device in self.devices.items():
                 await asyncio.sleep(0.1)  # Rate limiting
                 try:
@@ -940,13 +920,8 @@ class SelveManager:
                     elif hasattr(self.gateway, 'get_device_values'):
                         await self.gateway.get_device_values(device)
                     
-                    # Force publish even if no state change to ensure RSSI is current
+                    # Force publish even if no state change
                     await self._publish_state(dev_id)
-                    
-                    # Also publish RSSI separately to ensure MQTT has latest value
-                    props = self._get_device_properties(device)
-                    if props.rssi is not None:
-                        self.mqtt.publish(f"selve/{dev_id}/rssi", props.rssi, retain=True)
                         
                 except Exception as e:
                     logger.warning(f"Failed to update device {dev_id}: {e}")
