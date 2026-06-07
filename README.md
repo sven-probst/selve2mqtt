@@ -26,7 +26,7 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 ### Setup
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/selve2mqtt.git
+   git clone https://github.com/sven-probst/selve2mqtt.git
    cd selve2mqtt
    ```
 2. Install dependencies:
