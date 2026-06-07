@@ -1,0 +1,15 @@
+# Git
+.git
+.github
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Local configuration and secrets
+config.yaml
+*.log

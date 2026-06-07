@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 # Set version information
 ARG VERSION=dev
@@ -8,12 +8,22 @@ ENV WEB_PORT=8080
 WORKDIR /app
 
 # Install dependencies and curl for healthcheck
+# Using cache mounts speeds up multi-arch builds by persisting downloaded packages
 COPY requirements.txt .
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir -r requirements.txt
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends curl
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy all python modules and configuration
 COPY . .
+
+# Use the example configuration as a default. 
+# This ensures the container can start even if no config.yaml is mounted.
+RUN cp config.yaml.example config.yaml
 
 # USB-Zugriff erlauben
 RUN groupadd -g 1000 selve && \
