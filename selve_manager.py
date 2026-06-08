@@ -387,7 +387,7 @@ class SelveManager:
                 # Connectivity (Unreachable) Sensor Discovery
                 unreach_topic = f"{self.mqtt.discovery_prefix}/binary_sensor/selve_{dev_id}_unreachable/config"
                 unreach_cfg = {
-                    "name": f"{friendly_name} Connectivity",
+                    "name": self.i18n['ui'].get('connectivity', 'Connectivity'),
                     "unique_id": f"selve_device_{dev_id}_unreachable",
                     "state_topic": f"selve/{dev_id}/unreachable",
                     "payload_on": "ON",
@@ -417,7 +417,7 @@ class SelveManager:
             topic = f"{self.mqtt.discovery_prefix}/cover/selve_group_{grp_id}/config"
 
             cfg = {
-                "name": friendly_name,
+                "name": None,
                 "object_id": f"selve_group_{grp_id}",
                 "unique_id": f"selve_group_{grp_id}",
                 "command_topic": f"selve/group/{grp_id}/set",
@@ -446,7 +446,7 @@ class SelveManager:
 
             topic = f"{self.mqtt.discovery_prefix}/sensor/selve_sens_{sens_id}/config"
             cfg = {
-                "name": friendly_name,
+                "name": meta["type_name"],
                 "unique_id": f"selve_sensor_{sens_id}",
                 "state_topic": f"selve/sensor/{sens_id}/state",
                 "availability_topic": "selve/status",
@@ -472,7 +472,7 @@ class SelveManager:
             # Main sender entity (event sensor)
             topic = f"{self.mqtt.discovery_prefix}/sensor/selve_sender_{sender_id}/config"
             cfg = {
-                "name": f"{friendly_name}",
+                "name": None,
                 "unique_id": f"selve_sender_{sender_id}",
                 "state_topic": f"selve/sender/{sender_id}/state",
                 "availability_topic": "selve/status",
@@ -501,7 +501,7 @@ class SelveManager:
         # LED Switch
         led_topic = f"{self.mqtt.discovery_prefix}/switch/selve_gateway_led/config"
         self.mqtt.publish(led_topic, {
-            "name": "Gateway LED",
+            "name": self.i18n['ui'].get('gw_led', 'Gateway LED'),
             "unique_id": "selve_gateway_led",
             "command_topic": "selve/gateway/led/set",
             "state_topic": "selve/gateway/led/state",
@@ -512,7 +512,7 @@ class SelveManager:
         # Forwarding Switch
         fwd_topic = f"{self.mqtt.discovery_prefix}/switch/selve_gateway_forward/config"
         self.mqtt.publish(fwd_topic, {
-            "name": "Commeo Forwarding",
+            "name": self.i18n['ui'].get('gw_forwarding', 'Commeo Forwarding'),
             "unique_id": "selve_gateway_forward",
             "command_topic": "selve/gateway/forward/set",
             "state_topic": "selve/gateway/forward/state",
@@ -523,7 +523,7 @@ class SelveManager:
         # Duty Cycle Sensor
         dc_topic = f"{self.mqtt.discovery_prefix}/sensor/selve_gateway_duty_cycle/config"
         self.mqtt.publish(dc_topic, {
-            "name": "Gateway Duty Cycle",
+            "name": self.i18n['ui'].get('gw_duty_cycle', 'Gateway Duty Cycle'),
             "unique_id": "selve_gateway_duty_cycle",
             "state_topic": "selve/gateway/duty_cycle",
             "unit_of_measurement": "%",
@@ -534,7 +534,7 @@ class SelveManager:
         # Duty Cycle Blocked Binary Sensor
         dcb_topic = f"{self.mqtt.discovery_prefix}/binary_sensor/selve_gateway_duty_blocked/config"
         self.mqtt.publish(dcb_topic, {
-            "name": "Gateway Duty Cycle Blocked",
+            "name": self.i18n['ui'].get('gw_duty_blocked', 'Gateway Duty Cycle Blocked'),
             "unique_id": "selve_gateway_duty_blocked",
             "state_topic": "selve/gateway/duty_cycle_blocked",
             "payload_on": "ON",
