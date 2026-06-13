@@ -1,4 +1,4 @@
-python-selve-new>=2.2.13
+python-selve-new>=2.5.13
 paho-mqtt>=1.6.1
 pyyaml>=6.0
 fastapi==0.115.0
