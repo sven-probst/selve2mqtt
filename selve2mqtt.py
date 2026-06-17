@@ -130,20 +130,20 @@ async def main():
         except Exception:
             logger.exception("Error processing MQTT message on %s", msg.topic)
 
-    def on_mqtt_connect(client, userdata, flags, rc):
+    def on_mqtt_connect(client, userdata, flags, rc, properties):
         connected = (rc == 0)
         if connected:
             logger.info("Connected to MQTT broker")
             client.subscribe("selve/#")
         else:
             logger.error(f"MQTT connection failed with error code {rc}")
-        
+
         asyncio.run_coroutine_threadsafe(
             broadcast_status_update("mqtt_update", {"connected": connected}), 
             loop
         )
 
-    def on_mqtt_disconnect(client, userdata, rc):
+    def on_mqtt_disconnect(client, userdata, rc, properties):
         logger.warning(f"MQTT disconnected (rc: {rc})")
         asyncio.run_coroutine_threadsafe(
             broadcast_status_update("mqtt_update", {"connected": False}), 
