@@ -1,6 +1,6 @@
 python-selve-new>=2.5.14
-paho-mqtt>=2.0.0
-pyyaml>=6.0.2
-fastapi>=0.137.0
+paho-mqtt>=2.1.0
+pyyaml>=6.0.3
+fastapi>=0.138.0
 uvicorn>=0.49.0
-websockets>=14.0
+websockets>=16.0
