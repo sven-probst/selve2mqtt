@@ -76,11 +76,7 @@ async def main():
     logging.basicConfig(level=level, format=log_format, handlers=[logging.StreamHandler(sys.stdout)])
 
     loop = asyncio.get_running_loop()
-    mqtt_client = MQTTClient(config)
-    selve_manager = SelveManager(config, mqtt_client, loop, active_websockets)
-    app.state.selve_manager = selve_manager
-    app.state.mqtt_client = mqtt_client
-    
+
     # Configure dashboard token and version
     from web_app import set_dashboard_token, set_app_version
     set_dashboard_token(config.get('dashboard_token'))
@@ -130,25 +126,27 @@ async def main():
         except Exception:
             logger.exception("Error processing MQTT message on %s", msg.topic)
 
-    def on_mqtt_connect(client, userdata, flags, rc, properties):
-        connected = (rc == 0)
-        if connected:
-            logger.info("Connected to MQTT broker")
-            client.subscribe("selve/#")
-        else:
-            logger.error(f"MQTT connection failed with error code {rc}")
-
+    def on_mqtt_connect_cb(connected: bool, reason_code):
         asyncio.run_coroutine_threadsafe(
             broadcast_status_update("mqtt_update", {"connected": connected}), 
             loop
         )
 
-    def on_mqtt_disconnect(client, userdata, rc, properties):
-        logger.warning(f"MQTT disconnected (rc: {rc})")
+    def on_mqtt_disconnect_cb(reason_code):
         asyncio.run_coroutine_threadsafe(
             broadcast_status_update("mqtt_update", {"connected": False}), 
             loop
         )
+
+    mqtt_client = MQTTClient(
+        config,
+        on_connect_cb=on_mqtt_connect_cb,
+        on_disconnect_cb=on_mqtt_disconnect_cb,
+        on_message_cb=on_mqtt_message
+    )
+    selve_manager = SelveManager(config, mqtt_client, loop, active_websockets)
+    app.state.selve_manager = selve_manager
+    app.state.mqtt_client = mqtt_client
 
     # --- Initialization Sequence ---
 
@@ -157,10 +155,7 @@ async def main():
         await selve_manager.setup()
         await selve_manager.discover()
 
-        # Setup MQTT (Set handler before starting)
-        mqtt_client.client.on_message = on_mqtt_message
-        mqtt_client.client.on_connect = on_mqtt_connect
-        mqtt_client.client.on_disconnect = on_mqtt_disconnect
+        # Setup MQTT
         mqtt_client.start()
         await selve_manager.publish_discovery()
     except Exception as e:

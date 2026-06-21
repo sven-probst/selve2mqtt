@@ -124,7 +124,7 @@ async def health_check():
     manager = app.state.selve_manager
     mqtt_client = app.state.mqtt_client
     
-    mqtt_ok = mqtt_client.client.is_connected()
+    mqtt_ok = mqtt_client.is_connected
     # Basic check if gateway exists and is initialized
     selve_ok = manager.gateway is not None
     
@@ -186,7 +186,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
             if msg.get('type') == 'request_full_state':
                 state = manager.get_full_state()
                 # Inject current MQTT status into the initial state
-                state['mqtt_connected'] = app.state.mqtt_client.client.is_connected()
+                state['mqtt_connected'] = app.state.mqtt_client.is_connected
                 await websocket.send_json(state)
     except WebSocketDisconnect:
         active_websockets.remove(websocket)

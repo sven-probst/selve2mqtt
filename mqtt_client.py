@@ -6,7 +6,7 @@ from typing import Dict, Any
 logger = logging.getLogger("selve2mqtt.mqtt")
 
 class MQTTClient:
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], on_connect_cb=None, on_disconnect_cb=None, on_message_cb=None):
         self.broker = config['mqtt']['broker']
         self.port = config['mqtt'].get('port', 1883)
         self.username = config['mqtt'].get('username', '')
@@ -14,10 +14,13 @@ class MQTTClient:
         self.client_id = config['mqtt'].get('client_id', 'selve2mqtt')
         self.discovery_prefix = config['mqtt'].get('discovery_prefix', 'homeassistant')
 
-        self.client = mqtt.Client(client_id=self.client_id)
+        self.on_connect_cb = on_connect_cb
+        self.on_disconnect_cb = on_disconnect_cb
+        self.on_message_cb = on_message_cb
+
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.client_id)
         self.client.on_connect = self.on_connect
-        # Provide sensible defaults for other callbacks
-        self.client.on_message = self._on_message_placeholder
+        self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect
         # Configure automatic reconnect delays (min, max)
         try:
@@ -26,22 +29,46 @@ class MQTTClient:
             # Older paho versions may not have reconnect_delay_set
             pass
 
-    def _on_message_placeholder(self, client, userdata, msg):
-        logger.debug("MQTT message received but no handler is set for topic %s", msg.topic)
+    @property
+    def is_connected(self) -> bool:
+        return self.client.is_connected()
 
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def on_connect(self, client, userdata, flags, reason_code, properties):
+        connected = not reason_code.is_failure if hasattr(reason_code, 'is_failure') else (reason_code == 0)
+        if connected:
             logger.info("MQTT connected. Sending online status.")
             self.publish("selve/status", "online", retain=True)
             client.subscribe("selve/#")
         else:
-            logger.error(f"MQTT connection error: {rc}")
+            logger.error(f"MQTT connection error: {reason_code}")
 
-    def on_disconnect(self, client, userdata, rc):
-        if rc != 0:
-            logger.warning("Unexpected MQTT disconnection (rc=%s), attempting reconnect", rc)
+        if self.on_connect_cb:
+            try:
+                self.on_connect_cb(connected, reason_code)
+            except Exception as e:
+                logger.exception("Error in on_connect callback: %s", e)
+
+    def on_disconnect(self, client, userdata, flags, reason_code, properties):
+        is_fail = reason_code.is_failure if hasattr(reason_code, 'is_failure') else (reason_code != 0)
+        if is_fail:
+            logger.warning("Unexpected MQTT disconnection (reason_code=%s), attempting reconnect", reason_code)
         else:
             logger.info("MQTT disconnected cleanly")
+
+        if self.on_disconnect_cb:
+            try:
+                self.on_disconnect_cb(reason_code)
+            except Exception as e:
+                logger.exception("Error in on_disconnect callback: %s", e)
+
+    def on_message(self, client, userdata, msg):
+        if self.on_message_cb:
+            try:
+                self.on_message_cb(client, userdata, msg)
+            except Exception as e:
+                logger.exception("Error in on_message callback: %s", e)
+        else:
+            logger.debug("MQTT message received but no handler is set for topic %s", msg.topic)
 
     def start(self):
         if self.username:
