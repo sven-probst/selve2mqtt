@@ -20,7 +20,7 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 ## Installation
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.10+
 - A running MQTT Broker (e.g., Mosquitto)
 
 ### Setup
@@ -150,14 +150,22 @@ You can interact with the bridge using standard MQTT topics:
 | `selve/<device_id>/set` | `OPEN`, `CLOSE`, `STOP` | Control a specific device |
 | `selve/<device_id>/position/set` | `0-100` | Set device to specific position |
 | `selve/group/<group_id>/set` | `OPEN`, `CLOSE`, `STOP` | Control a Selve group |
+| `selve/group/<group_id>/position/set` | `0-100` | Set group to specific position |
 | `selve/gateway/led/set` | `ON`, `OFF` | Toggle the Gateway LED |
+| `selve/gateway/forward/set` | `ON`, `OFF` | Toggle gateway serial command forwarding |
 
 #### State Topics
 | Topic | Payload | Description |
 | :--- | :--- | :--- |
-| `selve/<device_id>/position` | `0-100` | Current position (0=closed, 100=open) |
-| `selve/<device_id>/unreachable` | `ON`, `OFF` | Connection status |
 | `selve/status` | `online`, `offline` | Bridge status (LWT) |
+| `selve/<device_id>/position` | `0-100` | Current position (0=closed, 100=open) |
+| `selve/<device_id>/unreachable` | `ON`, `OFF` | Connection status of the device |
+| `selve/<device_id>/state` | JSON | Device status flags and properties |
+| `selve/gateway/duty_cycle` | `0-100` | Current gateway duty cycle in percent |
+| `selve/gateway/duty_cycle_blocked` | `ON`, `OFF` | Gateway blocked state (exceeded duty cycle) |
+| `selve/gateway/led/state` | `ON`, `OFF` | Current Gateway LED state |
+| `selve/gateway/forward/state` | `ON`, `OFF` | Current Gateway forwarding state |
+| `selve/gateway/last_log` | JSON | Last received gateway event log |
 
 ## Web Dashboard
 

@@ -587,9 +587,10 @@ class SelveManager:
 
     def _process_gateway_events(self):
         """Handles Duty Cycle and Log events from the gateway."""
-        # Duty Cycle (Spec Page 74)
-        duty_val = getattr(self.gateway, 'duty_cycle', None)
-        duty_blocked = getattr(self.gateway, 'duty_cycle_blocked', None)
+        duty_val = getattr(self.gateway, 'utilization', None)
+        duty_mode = getattr(self.gateway, 'sendingBlocked', None)
+        duty_blocked = duty_mode.value in (1, 2) if duty_mode is not None else False
+
 
         if duty_val is not None:
             if (duty_val != self._state_cache.get("gw_duty_cycle") or
