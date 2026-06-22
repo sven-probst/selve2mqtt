@@ -113,6 +113,15 @@ class SelveManager:
         )
 
     async def setup(self):
+        # Cancel any existing keepalive task to prevent leaks on reconnect
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._keepalive_task = None
+
         port = self.config['selve'].get('port')
         self.gateway = Selve(port=port) if port else Selve()
 
@@ -132,6 +141,7 @@ class SelveManager:
         except Exception as e:
             self.log.error('err_gw_setup', e=str(e))
             raise e
+
 
     async def _keepalive_loop(self):
         """Sends a ping every 45s to prevent the 60s idle-reconnect in serial_transport."""
