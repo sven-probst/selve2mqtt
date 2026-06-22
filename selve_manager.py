@@ -111,16 +111,23 @@ class SelveManager:
             self.i18n.get('logs', {}),
             fallback=TRANSLATIONS.get('en', {}).get('logs', {})
         )
+        # Inter-command delay (ms) to prevent "Command overwritten" races on the
+        # single-slot COMMEO gateway. Configurable via selve.command_delay_ms.
+        self._cmd_delay: float = config['selve'].get('command_delay_ms', 300) / 1000.0
+        self._cmd_queue: asyncio.Queue = asyncio.Queue()
+        self._cmd_worker_task: Optional[asyncio.Task] = None
 
     async def setup(self):
-        # Cancel any existing keepalive task to prevent leaks on reconnect
-        if self._keepalive_task and not self._keepalive_task.done():
-            self._keepalive_task.cancel()
-            try:
-                await self._keepalive_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._keepalive_task = None
+        # Cancel any existing keepalive/worker tasks to prevent leaks on reconnect
+        for attr in ('_keepalive_task', '_cmd_worker_task'):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                setattr(self, attr, None)
 
         port = self.config['selve'].get('port')
         self.gateway = Selve(port=port) if port else Selve()
@@ -137,6 +144,10 @@ class SelveManager:
             self.gateway.register_callback(self.on_device_update)
             # Start keepalive task to prevent 60s idle reconnect
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            # Start serial command worker to avoid "Command overwritten" races
+            self._cmd_queue = asyncio.Queue()
+            self._cmd_worker_task = asyncio.create_task(self._cmd_worker())
+            logger.debug(f"Gateway command queue started (delay={self._cmd_delay*1000:.0f}ms)")
             self.log.info('gw_init', port=port if port else 'Auto-Discovery')
         except Exception as e:
             self.log.error('err_gw_setup', e=str(e))
@@ -154,6 +165,43 @@ class SelveManager:
                 break
             except Exception as e:
                 logger.warning(f"Keepalive ping failed: {e}")
+
+    async def _cmd_worker(self):
+        """Serialises all gateway commands to prevent 'Command overwritten' races.
+
+        The COMMEO gateway has a single command slot.  Sending a second command
+        before the first has been transmitted causes the gateway to log
+        "Command overwritten" and silently drop one of the commands.
+        This worker drains the queue one item at a time, inserting a small delay
+        (default 300 ms, configurable via selve.command_delay_ms) between each
+        dispatch so the gateway has time to forward the previous RF packet.
+        """
+        while True:
+            try:
+                coro, future = await self._cmd_queue.get()
+                try:
+                    result = await coro
+                    if not future.done():
+                        future.set_result(result)
+                except Exception as exc:
+                    if not future.done():
+                        future.set_exception(exc)
+                finally:
+                    self._cmd_queue.task_done()
+                    # Pause before the next command so the gateway can finish
+                    # transmitting the RF packet for the current command.
+                    await asyncio.sleep(self._cmd_delay)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Command worker error: {e}")
+
+    async def _dispatch(self, coro):
+        """Enqueue a gateway coroutine and await its result via the serial worker."""
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        await self._cmd_queue.put((coro, future))
+        return await future
 
     async def discover(self):
         self.log.info('discovery_start')
@@ -805,10 +853,9 @@ class SelveManager:
 
                 selve_pos = self._to_selve_position(pos_val)
 
-                # Use gateway.moveDevicePos() - the correct python-selve-new API
-                # SelveDevice has no movement methods; all control is via the gateway
+                # Route through serial queue to avoid "Command overwritten" races
                 try:
-                    await self.gateway.moveDevicePos(device, selve_pos)
+                    await self._dispatch(self.gateway.moveDevicePos(device, selve_pos))
                     logger.debug(f"Calling gateway.moveDevicePos(device {device_id}, {selve_pos})")
                 except Exception as e:
                     logger.error(f"Position command on device {device_id} failed: {e}", exc_info=True)
@@ -819,35 +866,36 @@ class SelveManager:
                 # Gateway methods per python-selve-new API
                 # Devices: moveDeviceUp/Down, stopDevice, moveDevicePos1/2
                 # Groups:  moveGroupUp/Down, stopGroup
+                # Route through serial queue to avoid "Command overwritten" races
                 try:
                     if is_group:
                         if command == "open":
                             logger.debug(f"Calling gateway.moveGroupUp(group {device_id})")
-                            await self.gateway.moveGroupUp(device)
+                            await self._dispatch(self.gateway.moveGroupUp(device))
                         elif command == "close":
                             logger.debug(f"Calling gateway.moveGroupDown(group {device_id})")
-                            await self.gateway.moveGroupDown(device)
+                            await self._dispatch(self.gateway.moveGroupDown(device))
                         elif command == "stop":
                             logger.debug(f"Calling gateway.stopGroup(group {device_id})")
-                            await self.gateway.stopGroup(device)
+                            await self._dispatch(self.gateway.stopGroup(device))
                         else:
                             logger.warning(f"Unknown group command '{command}' for {device_id}")
                     else:
                         if command == "open":
                             logger.debug(f"Calling gateway.moveDeviceUp(device {device_id})")
-                            await self.gateway.moveDeviceUp(device)
+                            await self._dispatch(self.gateway.moveDeviceUp(device))
                         elif command == "close":
                             logger.debug(f"Calling gateway.moveDeviceDown(device {device_id})")
-                            await self.gateway.moveDeviceDown(device)
+                            await self._dispatch(self.gateway.moveDeviceDown(device))
                         elif command == "stop":
                             logger.debug(f"Calling gateway.stopDevice(device {device_id})")
-                            await self.gateway.stopDevice(device)
+                            await self._dispatch(self.gateway.stopDevice(device))
                         elif command == "pos1":
                             logger.debug(f"Calling gateway.moveDevicePos1(device {device_id})")
-                            await self.gateway.moveDevicePos1(device)
+                            await self._dispatch(self.gateway.moveDevicePos1(device))
                         elif command == "pos2":
                             logger.debug(f"Calling gateway.moveDevicePos2(device {device_id})")
-                            await self.gateway.moveDevicePos2(device)
+                            await self._dispatch(self.gateway.moveDevicePos2(device))
                         else:
                             logger.warning(f"Unknown command '{command}' for device {device_id}")
                 except Exception as e:

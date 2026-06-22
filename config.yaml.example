@@ -12,6 +12,7 @@ selve:
   port: "/dev/ttyUSB0"     # USB-Serial Port
   open_close_fix: false    # true: 0-1% -> 0% / 99-100% -> 100% (pos. correction)
   min_firmware_version: "2.0.0"
+  command_delay_ms: 300    # Delay (ms) between gateway commands to prevent "Command overwritten" races
 
 # General Settings
 logging:
