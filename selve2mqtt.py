@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 from mqtt_client import MQTTClient
 from selve_manager import SelveManager
 from web_app import app, active_websockets, broadcast_status_update
+from common import setup_logger
 
 # --- Configuration Models ---
 
@@ -60,7 +61,7 @@ def load_config(config_file: str = "config.yaml"):
         logging.error(f"Configuration validation failed:\n{e}")
         sys.exit(1)
 
-logger = logging.getLogger("selve2mqtt.main")
+logger = setup_logger("selve2mqtt.main")
 
 async def run_fastapi(host: str, port: int):
     config_uv = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -68,12 +69,17 @@ async def run_fastapi(host: str, port: int):
 
 async def main():
     config = load_config()
-    # Configure logging to output to stdout for container visibility
+    # Apply logging configuration from config (level, format) to root logger
     log_cfg = config.get('logging', {}) or {}
     level_name = (log_cfg.get('level') or 'INFO').upper()
     level = getattr(logging, level_name, logging.INFO)
     log_format = log_cfg.get('format', "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    logging.basicConfig(level=level, format=log_format, handlers=[logging.StreamHandler(sys.stdout)])
+    # Reconfigure the root logger (already initially set up by setup_logger)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    for handler in root_logger.handlers:
+        handler.setLevel(level)
+        handler.setFormatter(logging.Formatter(log_format))
 
     loop = asyncio.get_running_loop()
 

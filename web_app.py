@@ -8,8 +8,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from translations import TRANSLATIONS
+from common import setup_logger
 
-logger = logging.getLogger("selve2mqtt.web")
+logger = setup_logger("selve2mqtt.web")
 active_websockets: Set[WebSocket] = set()
 security = HTTPBearer(auto_error=False)
 

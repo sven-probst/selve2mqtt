@@ -7,8 +7,9 @@ from typing import Dict, Any, Set, Optional, List, Union
 from selve import Selve
 from selve.util.protocol import MovementState
 from translations import TRANSLATIONS
+from common import BaseComponent, setup_logger, PendingResponse
 
-logger = logging.getLogger("selve2mqtt.selve")
+logger = setup_logger("selve2mqtt.selve")
 
 # Maximum number of bytes allowed for device/group/sensor labels (UTF-8)
 LABEL_MAX_BYTES = 23
@@ -90,9 +91,9 @@ class GatewayState:
     latest_firmware: str
     serial_number: str = "Unknown"
 
-class SelveManager:
+class SelveManager(BaseComponent):
     def __init__(self, config: Dict[str, Any], mqtt_client, loop: asyncio.AbstractEventLoop, active_websockets: Optional[Set] = None):
-        self.config = config
+        super().__init__(config)
         self.mqtt = mqtt_client
         self.loop = loop
         self.active_websockets = active_websockets if active_websockets is not None else set()
@@ -104,6 +105,7 @@ class SelveManager:
         self.open_close_fix = config['selve'].get('open_close_fix', False)
         self._state_cache: Dict[str, Any] = {}
         self._keepalive_task: Optional[asyncio.Task] = None
+        self._pending_responses = PendingResponse(default_timeout=10.0)
         self.lang_code = config.get('language', 'en')
         self.i18n = TRANSLATIONS.get(self.lang_code, TRANSLATIONS['en'])
         self.log = SelveLogger(
@@ -111,9 +113,11 @@ class SelveManager:
             self.i18n.get('logs', {}),
             fallback=TRANSLATIONS.get('en', {}).get('logs', {})
         )
-        # Inter-command delay (ms) to prevent "Command overwritten" races on the
-        # single-slot COMMEO gateway. Configurable via selve.command_delay_ms.
-        self._cmd_delay: float = config['selve'].get('command_delay_ms', 300) / 1000.0
+        # Inter-command delay (ms) – safety margin so the gateway's single RF
+        # slot is not overwritten.  The library serialises commands internally,
+        # so this only needs to be long enough for serial + RF dispatch.
+        # Default 100 ms; configurable via selve.command_delay_ms.
+        self._cmd_delay: float = config['selve'].get('command_delay_ms', 100) / 1000.0
         self._cmd_queue: asyncio.Queue = asyncio.Queue()
         self._cmd_worker_task: Optional[asyncio.Task] = None
 
@@ -692,6 +696,8 @@ class SelveManager:
                 self._handle_sender_update(device)
             elif dev_id in self.devices:
                 self._handle_device_state_change(device)
+            # Signal any waiter that a reply for this entity arrived
+            self._pending_responses.signal(dev_id)
         except Exception as e:
             self.log.error(f"Entity update error for {dev_id}: {e}")
 
@@ -844,6 +850,11 @@ class SelveManager:
             return
 
         try:
+            # Register a pending response BEFORE dispatching, so a fast
+            # callback reply is captured even if it arrives before wait().
+            if not is_group:
+                self._pending_responses.expect(device_id)
+
             if command == "position" and value is not None:
                 # Validate position range (0-100)
                 pos_val = int(value)
@@ -924,16 +935,23 @@ class SelveManager:
                 if optimistic:
                     await self._publish_state(device_id, forced_state=optimistic)
 
-                # For STOP command: poll until actually stopped (fix for position reporting)
-                if command == "stop":
-                    await self._poll_until_stopped(device_id, device, max_retries=12, delay=0.5)
-                else:
-                    # Brief wait for other commands then refresh once
-                    await asyncio.sleep(0.5)
-                    # Refresh device values using python-selve-new API
-                    if hasattr(device, 'id'):
-                        await self.gateway.updateCommeoDeviceValues(device.id)
-                    await self._publish_state(device_id)
+                # Wait for the callback to fire (device state update from gateway)
+                # instead of a fixed sleep.  The PendingResponse future was
+                # created before _dispatch() so the callback signal is captured
+                # even if it arrives before we call wait().
+                #
+                # Groups don't produce individual callbacks, so we skip the wait.
+                if not is_group:
+                    received = await self._pending_responses.wait(device_id)
+                    if not received:
+                        logger.debug(f"No callback for {device_id} within timeout – fallback poll")
+                        # Fallback: manually poll once so we don't stall
+                        if hasattr(device, 'id'):
+                            try:
+                                await self.gateway.updateCommeoDeviceValues(device.id)
+                            except Exception:
+                                pass
+                        await self._publish_state(device_id)
                     
         except Exception as e:
             logger.error(f"Command error ({command}) on {'group' if is_group else 'device'} {device_id}: {e}")
