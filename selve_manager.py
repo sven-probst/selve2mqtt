@@ -94,6 +94,7 @@ class GatewayState:
 class SelveManager(BaseComponent):
     def __init__(self, config: Dict[str, Any], mqtt_client, loop: asyncio.AbstractEventLoop, active_websockets: Optional[Set] = None):
         super().__init__(config)
+        self.config = config  # BaseComponent stores as _config; legacy code expects self.config
         self.mqtt = mqtt_client
         self.loop = loop
         self.active_websockets = active_websockets if active_websockets is not None else set()
