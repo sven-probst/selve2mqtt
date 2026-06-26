@@ -762,10 +762,11 @@ class SelveManager(BaseComponent):
         # Publish MQTT
         if current_state.position is not None:
             self.mqtt.publish(f"selve/{dev_id}/position", current_state.position, retain=True)
+        self.mqtt.publish(f"selve/{dev_id}/moving", "ON" if current_state.moving else "OFF", retain=True)
         self.mqtt.publish(f"selve/{dev_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
         self.mqtt.publish(f"selve/{dev_id}/state", props_dict, retain=True)
 
-        self.log.info('update_received', id=dev_id, pos=current_state.position)
+        self.log.info('update_received', id=dev_id, pos=current_state.position, moving=current_state.moving)
         if self.active_websockets:
             asyncio.run_coroutine_threadsafe(self.broadcast_ws(dev_id, **props_dict), self.loop)
 
@@ -1000,8 +1001,8 @@ class SelveManager(BaseComponent):
             self._state_cache[device_id] = current_state
             props_dict = asdict(current_state)
             self.mqtt.publish(f"selve/{device_id}/position", current_state.position, retain=True)
-
-            self.mqtt.publish(f"selve/{device_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
+                        self.mqtt.publish(f"selve/{device_id}/moving", "ON" if current_state.moving else "OFF", retain=True)
+                        self.mqtt.publish(f"selve/{device_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
 
             self.mqtt.publish(f"selve/{device_id}/state", props_dict, retain=True)
 
