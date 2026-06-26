@@ -147,6 +147,17 @@ class SelveManager(BaseComponent):
             # Force initial gateway state update to ensure values are available
             await self._refresh_gateway_state()
             self.gateway.register_callback(self.on_device_update)
+            # Enable spontaneous events from the gateway: device movements via
+            # remote control (eventDevice) and duty cycle warnings (eventDuty).
+            # This lets us react immediately without polling.
+            try:
+                await self.gateway.setEvents(eventDevice=True, eventSensor=False,
+                                            eventSender=False, eventLogging=False,
+                                            eventDuty=True)
+                self.gateway.register_event_callback(self.on_gateway_event)
+                self.log.info('events_enabled')
+            except Exception as e:
+                self.log.warning('events_not_supported', e=str(e))
             # Start keepalive task to prevent 60s idle reconnect
             self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             # Start serial command worker to avoid "Command overwritten" races
@@ -236,13 +247,20 @@ class SelveManager(BaseComponent):
         
         # Explicitly load senders if method exists (python-selve-new API)
         try:
-            if hasattr(self.gateway, 'getSenderIds'):
-                sender_ids = await self.gateway.getSenderIds()
+            if hasattr(self.gateway, 'senderGetIds'):
+                result = await self.gateway.senderGetIds()
+                sender_ids = result.ids if hasattr(result, 'ids') else result
                 self.senders = {}
                 for sid in sender_ids:
                     try:
-                        sender_info = await self.gateway.getSenderInfo(sid)
-                        self.senders[str(sid)] = sender_info
+                        info = await self.gateway.senderGetInfo(sid)
+                        self.senders[str(sid)] = {
+                            'id': sid,
+                            'name': info.name if hasattr(info, 'name') else f'Sender {sid}',
+                            'rfAddress': getattr(info, 'rfAddress', None),
+                            'rfChannel': getattr(info, 'rfChannel', None),
+                            'rfResetCount': getattr(info, 'rfResetCount', None)
+                        }
                     except Exception as e:
                         logger.warning(f"Could not load sender {sid}: {e}")
                         self.senders[str(sid)] = {'id': sid, 'name': f'Sender {sid}'}
@@ -648,6 +666,15 @@ class SelveManager(BaseComponent):
             for grp_obj in list(self.groups.values()):
                 self._process_entity_update(grp_obj)
 
+    def on_gateway_event(self, response=None):
+        """Callback for spontaneous gateway events (duty cycle, logs).
+
+        Fired via register_event_callback when the gateway pushes an
+        unsolicited event (e.g. DutyCycleResponse, LogEventResponse).
+        Refreshes the cached gateway state and notifies the dashboard.
+        """
+        self._process_gateway_events()
+
     def _process_gateway_events(self):
         """Handles Duty Cycle and Log events from the gateway."""
         duty_val = getattr(self.gateway, 'utilization', None)
@@ -990,22 +1017,17 @@ class SelveManager(BaseComponent):
             for dev_id, device in self.devices.items():
                 await asyncio.sleep(0.1)  # Rate limiting
                 try:
-                    # Try python-selve-new API methods
+                    # Use python-selve-new API: device.update() or gateway.updateCommeoDeviceValues()
                     if hasattr(device, 'update'):
                         await device.update()
-                    elif hasattr(self.gateway, 'getDeviceValues'):
-                        await self.gateway.getDeviceValues(device)
-                    elif hasattr(self.gateway, 'get_device_values'):
-                        await self.gateway.get_device_values(device)
+                    elif hasattr(self.gateway, 'updateCommeoDeviceValues'):
+                        await self.gateway.updateCommeoDeviceValues(device.id if hasattr(device, 'id') else int(dev_id))
                     
                     # Force publish even if no state change
                     await self._publish_state(dev_id)
                         
                 except Exception as e:
                     logger.warning(f"Failed to update device {dev_id}: {e}")
-            
-            # Refresh gateway state (duty cycle, etc.)
-            await self.check_firmware()
             
         except Exception as e:
             logger.error(f"Global update error: {e}")
@@ -1017,38 +1039,49 @@ class SelveManager(BaseComponent):
         """
         self.log.info('pairing_start')
         try:
-            await self.gateway.scan_start()
+            await self.gateway.scanStart()
 
             found_anything = False
             # Poll scan results instead of blind sleep (Spec Page 29)
             for _ in range(timeout_seconds):
                 await asyncio.sleep(1)
-                # scan_result returns (status, count, discovered_ids)
-                status, count, discovered_ids = await self.gateway.scan_result()
+                # scanResult returns DeviceScanResultResponse with attributes:
+                # .scanState (ScanState enum: IDLE=0, RUN=1, VERIFY=2, END_SUCCESS=3, END_FAILED=4)
+                # .noNewDevices (int), .foundIds (list of ints)
+                result = await self.gateway.scanResult()
+                scan_state = result.scanState
+                count = result.noNewDevices
+                discovered_ids = result.foundIds
 
-                if status == 1: # Run
+                # Get enum value
+                try:
+                    state_value = int(scan_state.value) if hasattr(scan_state, 'value') else int(scan_state)
+                except (ValueError, TypeError):
+                    continue
+
+                if state_value == 1:  # RUN
                     if count > 0:
                         self.log.info('scan_progress', count=count)
 
-                elif status == 3: # End_Success
+                elif state_value == 3:  # END_SUCCESS
                     self.log.info('scan_finished', count=count)
                     for dev_id in discovered_ids:
                         self.log.info('save_dev', id=dev_id)
-                        await self.gateway.save_device(dev_id)
+                        await self.gateway.deviceSave(dev_id)
                     found_anything = True
                     break
 
-                elif status == 4: # End_Failed
+                elif state_value == 4:  # END_FAILED
                     self.log.error('err_scan_failed')
                     break
 
             # Spec Page 28: scanStop clears the temporary list
-            await self.gateway.scan_stop()
+            await self.gateway.scanStop()
             return found_anything
         except Exception as e:
             logger.error(f"Critical error during learning mode: {e}")
             try:
-                await self.gateway.scan_stop()
+                await self.gateway.scanStop()
             except:
                 pass
             return False
@@ -1066,13 +1099,24 @@ class SelveManager(BaseComponent):
             # Poll teach results periodically (Spec Page 41)
             for _ in range(timeout_seconds):
                 await asyncio.sleep(1)
-                # sensor_teach_result returns (status, time_left, sensor_id)
-                status, time_left, sensor_id = await self.gateway.sensorTeachResult()
+                # sensorTeachResult returns SensorTeachResultResponse with attributes:
+                # .teachState (TeachState enum: IDLE=0, RUN=1, END_SUCCESS=2)
+                # .timeLeft (int), .foundId (int)
+                result = await self.gateway.sensorTeachResult()
+                teach_state = result.teachState
+                time_left = result.timeLeft
+                sensor_id = result.foundId
 
-                if status == 1: # Run
+                # Get enum value
+                try:
+                    state_value = int(teach_state.value) if hasattr(teach_state, 'value') else int(teach_state)
+                except (ValueError, TypeError):
+                    continue
+
+                if state_value == 1:  # RUN
                     if _ % 10 == 0:
                         self.log.info('sensor_teach_progress', time=time_left)
-                elif status == 2: # End_Success
+                elif state_value == 2:  # END_SUCCESS
                     self.log.info('sensor_teach_success', id=sensor_id)
                     found_anything = True
                     break
@@ -1093,7 +1137,7 @@ class SelveManager(BaseComponent):
         """
         try:
             self.log.info('del_dev', id=device_id)
-            await self.gateway.delete_device(int(device_id))
+            await self.gateway.deviceDelete(int(device_id))
             await self.discover() # Refresh internal device list
             return True
         except Exception as e:
@@ -1106,7 +1150,7 @@ class SelveManager(BaseComponent):
         """
         try:
             self.log.info('del_sens', id=sensor_id)
-            await self.gateway.delete_sensor(int(sensor_id))
+            await self.gateway.sensorDelete(int(sensor_id))
             await self.discover() # Refresh internal sensor list
             return True
         except Exception as e:
@@ -1260,8 +1304,8 @@ class SelveManager(BaseComponent):
         Otherwise, returns False.
         """
         try:
-            if hasattr(self.gateway, 'delete_sender'):
-                await self.gateway.delete_sender(int(sender_id))
+            if hasattr(self.gateway, 'senderDelete'):
+                await self.gateway.senderDelete(int(sender_id))
                 await self.discover()
                 return True
 
@@ -1398,8 +1442,9 @@ class SelveManager(BaseComponent):
             int_id = int(group_id)
             int_device_ids = [int(did) for did in device_ids]
 
-            # Library call to write group configuration (name and membership)
-            await self.gateway.write_group(int_id, name, int_device_ids)
+            # Library call: groupWrite(id, actorIds_dict, name)
+            # actorIds must be a dict {device_id: 1} for members, {device_id: 0} for non-members
+            await self.gateway.groupWrite(int_id, dict.fromkeys(int_device_ids, 1), name)
 
             # Refresh internal state and notify HA
             await self.discover()
@@ -1415,7 +1460,7 @@ class SelveManager(BaseComponent):
         """
         try:
             self.log.info('del_group', id=group_id)
-            await self.gateway.delete_group(int(group_id))
+            await self.gateway.groupDelete(int(group_id))
             await self.discover()
             self.publish_discovery()
             return True
