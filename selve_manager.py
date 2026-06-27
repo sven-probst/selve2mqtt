@@ -69,6 +69,7 @@ class DeviceState:
     obstructed: bool
     overload: bool
     auto_mode: bool
+    selve_raw_value: int = 0
 
 @dataclass(frozen=True)
 class GroupState:
@@ -324,7 +325,8 @@ class SelveManager(BaseComponent):
             unreachable=self._get_attr(device, 'unreachable', False),
             obstructed=self._get_attr(device, 'obstructed', False),
             overload=self._get_attr(device, 'overload', False),
-            auto_mode=self._get_attr(device, 'automaticMode', False)
+            auto_mode=self._get_attr(device, 'automaticMode', False),
+            selve_raw_value=selve_raw
         )
 
     def _get_group_properties(self, group) -> GroupState:
@@ -763,10 +765,11 @@ class SelveManager(BaseComponent):
         if current_state.position is not None:
             self.mqtt.publish(f"selve/{dev_id}/position", current_state.position, retain=True)
         self.mqtt.publish(f"selve/{dev_id}/moving", "ON" if current_state.moving else "OFF", retain=True)
+        self.mqtt.publish(f"selve/{dev_id}/selve_raw_value", current_state.selve_raw_value, retain=True)
         self.mqtt.publish(f"selve/{dev_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
         self.mqtt.publish(f"selve/{dev_id}/state", props_dict, retain=True)
 
-        self.log.info('update_received', id=dev_id, pos=current_state.position, moving=current_state.moving)
+        self.log.info('update_received', id=dev_id, pos=current_state.position, moving=current_state.moving, raw=current_state.selve_raw_value)
         if self.active_websockets:
             asyncio.run_coroutine_threadsafe(self.broadcast_ws(dev_id, **props_dict), self.loop)
 
@@ -943,7 +946,12 @@ class SelveManager(BaseComponent):
 
             logs = self.i18n.get('logs', {})
             target_type = logs.get('type_group', 'group') if is_group else logs.get('type_device', 'device')
-            self.log.info('cmd_sent', cmd=command, type=target_type, id=device_id)
+            log_params = dict(cmd=command, type=target_type, id=device_id)
+            if command == "position" and value is not None:
+                log_params['val'] = f" (Ziel: {int(value)}%)."
+            else:
+                log_params['val'] = "."
+            self.log.info('cmd_sent', **log_params)
 
             if not is_group:
                 # Publish optimistic state
@@ -1002,6 +1010,7 @@ class SelveManager(BaseComponent):
             props_dict = asdict(current_state)
             self.mqtt.publish(f"selve/{device_id}/position", current_state.position, retain=True)
             self.mqtt.publish(f"selve/{device_id}/moving", "ON" if current_state.moving else "OFF", retain=True)
+            self.mqtt.publish(f"selve/{device_id}/selve_raw_value", current_state.selve_raw_value, retain=True)
             self.mqtt.publish(f"selve/{device_id}/unreachable", "OFF" if current_state.unreachable else "ON", retain=True)
 
             self.mqtt.publish(f"selve/{device_id}/state", props_dict, retain=True)
