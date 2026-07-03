@@ -4,13 +4,22 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 
 ## Features
 
-- **MQTT Discovery:** Automatic integration into Home Assistant (Covers, Sensors, and Diagnostic switches).
-- **Web Dashboard:** A built-in web interface for device management, pairing (learning mode), and renaming.
-- **Commeo Support:** Bi-directional communication (position feedback, status flags).
-- **Iveo Support:** Basic uni-directional control.
-- **Group Control:** Support for Selve hardware groups.
-- **Gateway Diagnostics:** Monitoring of the Gateway Duty Cycle and system health.
+- **MQTT Discovery:** Automatic integration into Home Assistant (Cover entities with position feedback, diagnostic binary sensors, gateway switches).
+- **Cover State (`is_opening` / `is_closing`):** Full bi-directional movement status reporting — Home Assistant correctly shows "Opening", "Closing", "Stopped", "Open", or "Closed".
+- **Web Dashboard:** A built-in web interface for device management, pairing (learning mode), renaming, and diagnostics.
+- **WebSocket API:** Real-time device updates and gateway events pushed to the dashboard.
+- **REST API:** Full HTTP API for device control, group management, sender teach-in, and gateway configuration.
+- **Commeo Support:** Bi-directional communication (position feedback, status flags, movement state).
+- **Iveo Support:** Basic uni-directional control (optimistic state).
+- **Group Control:** Support for Selve hardware groups (via `groupWrite`).
+- **Gateway Diagnostics:** Monitoring of the Gateway Duty Cycle, LED control, Commeo Forwarding toggle.
+- **Sender (Remote) Management:** List, rename, delete, and teach-in remote controls.
+- **Sensor Support:** Read values from Selve sensors (wind, rain, light, temperature).
 - **Secure API:** Optional token-based authentication for the web dashboard and REST API.
+- **Command Serialisation:** Automatic queue delay between gateway commands to prevent "Command overwritten" races.
+- **Keepalive / Reconnect:** Automatic pings and reconnection handling for the Selve gateway.
+- **Docker / Podman ready:** Official container image with health checks.
+- **i18n:** Fully translated UI and log messages in German and English.
 
 ## Hardware Requirements
 
@@ -131,15 +140,67 @@ systemctl --user start selve2mqtt
 The `config.yaml` file allows you to configure your MQTT broker and gateway settings. Key settings include:
 
 - `mqtt`: Connection details for your broker.
-- `selve.port`: The serial port of your USB stick (e.g., `/dev/ttyUSB0`).
+- `selve.port`: The serial port of your USB stick (e.g., `/dev/ttyUSB0`). Leave empty for auto-detection.
+- `selve.open_close_fix`: If `true`, position endpoints are corrected (0-1% → 0%, 99-100% → 100%).
+- `selve.command_delay_ms`: Delay (ms) between gateway commands to prevent "Command overwritten" races.
 - `dashboard_token`: Set a password/token to protect your web dashboard.
+- `discovery_interval`: Seconds between MQTT discovery runs (0 = disabled).
+- `update_interval`: Seconds between periodic state updates.
 
 ## Smart Home Integration
 
 ### Home Assistant
 If your Home Assistant instance has MQTT Discovery enabled, your Selve devices will appear automatically as **Cover** entities. 
+
 - **Positioning:** Supports setting and reporting position (0-100%).
-- **Attributes:** Connectivity status and error flags (obstructed, overload) are available as diagnostic sensors.
+- **Movement State (`is_opening` / `is_closing`):** Home Assistant's cover entities will correctly display **Opening**, **Closing**, **Open**, **Closed**, and **Stopped** states. This is achieved by publishing a cover state string on a dedicated `state_topic`.
+- **Attributes:** Connectivity status, error flags (obstructed, overload), and raw Selve values are available as diagnostic sensors.
+- **Groups:** Created as cover entities with position control (optimistic, no feedback).
+
+#### How `is_opening` / `is_closing` works
+
+Each device publishes its current cover state on the topic `selve/<device_id>/cover_state`. The payload is one of:
+
+| Payload | Meaning | Home Assistant State |
+|---------|---------|---------------------|
+| `"open"` | Fully open (position ≥ 100%) | `is_closing=False, is_opening=False` |
+| `"closed"` | Fully closed (position ≤ 0%) | `is_closing=False, is_opening=False` |
+| `"opening"` | Currently moving up | `is_opening=True` |
+| `"closing"` | Currently moving down | `is_closing=True` |
+| `"stopped"` | Stopped at an intermediate position | `is_closing=False, is_opening=False` |
+
+The state is derived from the Selve `MovementState` enum:
+- `MovementState.UP_ON` (2) → `"opening"`
+- `MovementState.DOWN_ON` (3) → `"closing"`
+- `MovementState.STOPPED_OFF` (1) → `"stopped"` (or `"open"`/`"closed"` if position is at an endpoint)
+- `MovementState.UNKOWN` (0) → inferred from position
+
+When a command is sent (e.g. `OPEN`, `CLOSE`, `STOP`), an **optimistic** state is published immediately, followed by the real state from the gateway callback.
+
+#### Discovery Configuration
+
+The MQTT discovery payload for each cover entity includes:
+
+```json
+{
+  "state_topic": "selve/<device_id>/cover_state",
+  "state_open": "open",
+  "state_opening": "opening",
+  "state_closed": "closed",
+  "state_closing": "closing",
+  "state_stopped": "stopped",
+  "command_topic": "selve/<device_id>/set",
+  "position_topic": "selve/<device_id>/position",
+  "set_position_topic": "selve/<device_id>/position/set",
+  "position_open": 100,
+  "position_closed": 0,
+  "availability_topic": "selve/status",
+  "payload_available": "online",
+  "payload_not_available": "offline",
+  "optimistic": false,
+  "device_class": "shutter"
+}
+```
 
 ### Other Systems (openHAB, Node-RED, etc.)
 You can interact with the bridge using standard MQTT topics:
@@ -158,29 +219,151 @@ You can interact with the bridge using standard MQTT topics:
 | Topic | Payload | Description |
 | :--- | :--- | :--- |
 | `selve/status` | `online`, `offline` | Bridge status (LWT) |
+| `selve/<device_id>/cover_state` | `open`, `closed`, `opening`, `closing`, `stopped` | Cover state for Home Assistant `is_opening`/`is_closing` |
 | `selve/<device_id>/position` | `0-100` | Current position (0=closed, 100=open) |
+| `selve/<device_id>/moving` | `ON`, `OFF` | Device movement flag |
 | `selve/<device_id>/unreachable` | `ON`, `OFF` | Connection status of the device |
+| `selve/<device_id>/selve_raw_value` | `0-100` | Raw Selve position (0=open, 100=closed) |
 | `selve/<device_id>/state` | JSON | Device status flags and properties |
+| `selve/<device_id>/attributes` | JSON | Detailed device attributes (day mode, alarms, etc.) |
+| `selve/sensor/<sensor_id>/state` | Value | Current sensor reading |
+| `selve/sender/<sender_id>/state` | Event code | Last sender event code |
 | `selve/gateway/duty_cycle` | `0-100` | Current gateway duty cycle in percent |
 | `selve/gateway/duty_cycle_blocked` | `ON`, `OFF` | Gateway blocked state (exceeded duty cycle) |
 | `selve/gateway/led/state` | `ON`, `OFF` | Current Gateway LED state |
 | `selve/gateway/forward/state` | `ON`, `OFF` | Current Gateway forwarding state |
 | `selve/gateway/last_log` | JSON | Last received gateway event log |
 
+#### Device State JSON Format
+
+The `selve/<device_id>/state` topic publishes a JSON object with the following fields:
+
+```json
+{
+  "position": 75,
+  "moving": false,
+  "movement_direction": null,
+  "name": "Living Room Shutter",
+  "unreachable": false,
+  "obstructed": false,
+  "overload": false,
+  "auto_mode": true,
+  "selve_raw_value": 25
+}
+```
+
+- `movement_direction`: `"opening"`, `"closing"`, `"stopped"`, or `null` if unknown.
+- `position`: Home Assistant percentage (0 = closed, 100 = open).
+- `selve_raw_value`: Selve raw value (0 = open, 100 = closed).
+
 ## Web Dashboard
 
-Access the dashboard via `http://<your-ip>:8080`. 
+Access the dashboard via `http://<your-ip>:8080`. If a `dashboard_token` is configured, append `?token=xxx` to the URL or set the `X-Access-Token` header.
 
-- **Pairing:** Click "Actor Learning" to put the gateway into pair mode for 30 seconds.
-- **Management:** Rename devices, create/delete groups, or check the Gateway duty cycle.
-- **API:** The bridge provides a REST API (see `web_app.py` for endpoints).
+- **Pairing:** Click "Actor Learning" to put the gateway into pair mode for up to 60 seconds.
+- **Sensor Learning:** Click "Sensor Learning" to teach in Selve sensors.
+- **Sender Teach:** Click "Start sender teach" to pair remote controls to the gateway.
+- **Management:** Rename devices, create/delete groups, manage senders, control LED and forwarding.
+- **Diagnostics:** View Gateway duty cycle, firmware version, and device status.
+
+## REST API
+
+The bridge provides a comprehensive HTTP API (all endpoints under `/api/`). Below is a summary:
+
+### Device Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/device/{device_id}/{command}` | Send command (`open`, `close`, `stop`, `position`, `pos1`, `pos2`) |
+| POST | `/api/device/{device_id}/rename?name=...` | Rename a device |
+| POST | `/api/device/{device_id}/delete` | Delete a device |
+| POST | `/api/device/{device_id}/learning?enabled=true` | Device learning mode (limited support) |
+
+### Group Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/group/{group_id}/{command}` | Send command to a group |
+| POST | `/api/group/save` | Create or update a group (JSON body: `{id, name, device_ids}`) |
+| POST | `/api/group/{group_id}/delete` | Delete a group |
+
+### Sender Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/senders` | List all senders |
+| GET | `/api/sender/{sender_id}` | Get sender info |
+| POST | `/api/sender/{sender_id}/rename?name=...` | Rename a sender |
+| POST | `/api/sender/{sender_id}/delete` | Delete a sender globally |
+| GET | `/api/sender/{sender_id}/values` | Get sender values |
+| POST | `/api/sender/teach?timeout=60` | Start sender teach/pairing |
+| POST | `/api/sender/teach/stop` | Stop sender teach |
+
+### Gateway Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/gateway/reset` | Reset the gateway |
+| POST | `/api/gateway/config/led?enabled=true/false` | Toggle LED |
+| POST | `/api/gateway/config/forward?enabled=true/false` | Toggle Commeo Forwarding |
+
+### Learning Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/learn?timeout=60` | Start actor learning mode |
+| POST | `/api/learn_sensor?timeout=60` | Start sensor learning mode |
+
+### Health Endpoint
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check (returns `{"status": "healthy", "mqtt": true, "selve": true}`) |
+
+## WebSocket Protocol
+
+The bridge provides a real-time WebSocket endpoint at `/ws`. Optional token authentication via `?token=xxx`.
+
+### Client → Server
+Send a JSON message:
+```json
+{"type": "request_full_state"}
+```
+Returns a `full_state` snapshot with all devices, groups, sensors, senders, gateway info, and MQTT connection status.
+
+### Server → Client (Events)
+| Type | Fields | Description |
+|------|--------|-------------|
+| `full_state` | `devices`, `groups`, `sensors`, `senders`, `gateway`, `mqtt_connected` | Initial or requested full state |
+| `device_update` | `id`, `position`, `moving`, `movement_direction`, `unreachable`, `obstructed`, `overload`, `auto_mode` | Device state change |
+| `gateway_update` | `duty_cycle`, `duty_blocked` | Gateway diagnostics update |
+| `sensor_update` | `id`, `value`, `unit` | Sensor value change |
+| `sender_update` | `id`, `event` | Sender event |
+| `mqtt_update` | `connected` | MQTT connection state change |
 
 ## Development
 
 This project uses:
-- FastAPI for the web server.
-- paho-mqtt for MQTT communication.
-- python-selve-new for communication with the Selve USB stick.
+- [python-selve-new](https://github.com/Kannix2005/python-selve-new) for communication with the Selve USB stick.
+- **FastAPI** for the web server and REST API.
+- **paho-mqtt** for MQTT communication.
+- **Pydantic v2** for all configuration and state models (validation, serialisation).
+- **asyncio** for asynchronous I/O and command serialisation.
+- **WebSocket** for real-time dashboard updates.
+
+### Project Structure
+```
+├── selve2mqtt.py          # Main entry point (asyncio)
+├── models.py              # Pydantic models (config, device state, API)
+├── selve_manager.py       # Selve gateway orchestrator (core logic)
+├── mqtt_client.py         # MQTT client wrapper (paho-mqtt)
+├── web_app.py             # FastAPI web server & REST API
+├── common.py              # Shared utilities (logging, base class)
+├── translations.py        # i18n strings (DE / EN)
+├── templates/
+│   └── dashboard.html     # Web dashboard HTML template
+├── config.yaml.example    # Example configuration
+└── Dockerfile             # Container build
+```
+
+### Adding a new language
+1. Add a new language dictionary to `translations.py` (copy the `en` or `de` structure).
+2. Add the language code to `LANGUAGE_CODES` in `models.py:AppConfig`.
+3. Set `language: "xx"` in your `config.yaml`.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.

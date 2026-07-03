@@ -7,50 +7,22 @@ import sys
 import yaml
 import uvicorn
 from typing import Dict, Optional
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
+from models import AppConfig, LoggingConfig
 from mqtt_client import MQTTClient
 from selve_manager import SelveManager
 from web_app import app, active_websockets, broadcast_status_update
 from common import setup_logger
 
-# --- Configuration Models ---
 
-class SelveConfig(BaseModel):
-    port: Optional[str] = None
-    open_close_fix: bool = False
-    min_firmware_version: str = "2.0.0"
-    firmware_url: Optional[str] = None
-
-class MQTTConfig(BaseModel):
-    broker: str
-    port: int = 1883
-    username: str = ""
-    password: str = ""
-    client_id: str = "selve2mqtt"
-    discovery_prefix: str = "homeassistant"
-
-class WebConfig(BaseModel):
-    host: str = "0.0.0.0"
-    port: int = 8080
-
-class AppConfig(BaseModel):
-    mqtt: MQTTConfig
-    selve: SelveConfig
-    logging: Dict[str, str] = Field(default_factory=lambda: {"level": "INFO", "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"})
-    language: str = "de"
-    discovery_interval: int = 60
-    update_interval: int = 30
-    dashboard_token: Optional[str] = None  # Token for dashboard/API authentication - if empty or not set, no auth required
-    web: WebConfig = Field(default_factory=WebConfig)
-
-def load_config(config_file: str = "config.yaml"):
+def load_config(config_file: str = "config.yaml") -> AppConfig:
     try:
         with open(config_file, 'r') as f:
             raw_yaml = yaml.safe_load(f)
             if raw_yaml is None:
                 raw_yaml = {}
-            return AppConfig(**raw_yaml).model_dump()
+            return AppConfig(**raw_yaml)
     except FileNotFoundError:
         logging.error(f"Configuration file {config_file} not found.")
         sys.exit(1)
@@ -61,31 +33,30 @@ def load_config(config_file: str = "config.yaml"):
         logging.error(f"Configuration validation failed:\n{e}")
         sys.exit(1)
 
+
 logger = setup_logger("selve2mqtt.main")
+
 
 async def run_fastapi(host: str, port: int):
     config_uv = uvicorn.Config(app, host=host, port=port, log_level="warning")
     await uvicorn.Server(config_uv).serve()
 
+
 async def main():
     config = load_config()
-    # Apply logging configuration from config (level, format) to root logger
-    log_cfg = config.get('logging', {}) or {}
-    level_name = (log_cfg.get('level') or 'INFO').upper()
-    level = getattr(logging, level_name, logging.INFO)
-    log_format = log_cfg.get('format', "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    # Reconfigure the root logger (already initially set up by setup_logger)
+
+    # Apply structured logging configuration from the validated model
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(config.logging.level)
     for handler in root_logger.handlers:
-        handler.setLevel(level)
-        handler.setFormatter(logging.Formatter(log_format))
+        handler.setLevel(config.logging.level)
+        handler.setFormatter(logging.Formatter(config.logging.format))
 
     loop = asyncio.get_running_loop()
 
     # Configure dashboard token and version
     from web_app import set_dashboard_token, set_app_version
-    set_dashboard_token(config.get('dashboard_token'))
+    set_dashboard_token(config.dashboard_token)
     set_app_version(os.environ.get("APP_VERSION", "dev"))
 
     def on_mqtt_message(client, userdata, msg):
@@ -107,14 +78,12 @@ async def main():
                     except ValueError:
                         logger.warning("Invalid position payload for %s: %r", msg.topic, payload_str)
 
-            # Group command: selve/group/<group_id>/... (expects at least 4 parts)
+            # Group command: selve/group/<group_id>/...
             elif len(parts) >= 4 and parts[0] == "selve" and parts[1] == "group":
-                # selve/group/<group_id>/set
                 if parts[3] == "set":
                     cmd = {"OPEN": "open", "CLOSE": "close", "STOP": "stop"}.get(payload_up)
                     if cmd:
                         asyncio.run_coroutine_threadsafe(selve_manager.handle_command(parts[2], cmd, is_group=True), loop)
-                # selve/group/<group_id>/position/set
                 elif parts[3] == "position" and len(parts) > 4 and parts[4] == "set":
                     try:
                         pos = int(payload_str)
@@ -155,27 +124,23 @@ async def main():
     app.state.mqtt_client = mqtt_client
 
     # --- Initialization Sequence ---
-
     try:
-        # Initialize Selve Connection
         await selve_manager.setup()
         await selve_manager.discover()
-
-        # Setup MQTT
         mqtt_client.start()
         await selve_manager.publish_discovery()
     except Exception as e:
         logger.critical(f"Failed to initialize components: {e}", exc_info=True)
-        if selve_manager.gateway: await selve_manager.gateway.stopWorker()
+        if selve_manager.gateway:
+            await selve_manager.gateway.stopWorker()
         sys.exit(1)
 
-    # --- Running Tasks ---
-
+    # --- Periodic update task ---
     async def periodic_update():
         reconnecting = False
         try:
             while True:
-                await asyncio.sleep(config.get('update_interval', 30))
+                await asyncio.sleep(config.update_interval)
                 try:
                     await selve_manager.update_all()
                     if reconnecting:
@@ -184,18 +149,14 @@ async def main():
                 except Exception as e:
                     reconnecting = True
                     logger.error(f"Selve Gateway connection lost: {e}. Attempting reconnect...")
-                    # Inform UI that gateway is offline
                     await broadcast_status_update("gateway_update", {"duty_cycle": 0, "duty_blocked": True})
                     
                     try:
-                        # Try to stop existing worker safely if it exists
                         if hasattr(selve_manager, 'gateway') and selve_manager.gateway:
                             try:
                                 await selve_manager.gateway.stopWorker()
                             except Exception:
                                 pass
-                        
-                        # Re-initialize the connection
                         await selve_manager.setup()
                         await selve_manager.discover()
                         await selve_manager.publish_discovery()
@@ -209,8 +170,8 @@ async def main():
     periodic_task = asyncio.create_task(periodic_update())
 
     # Web server configuration: environment variables take precedence over the config file
-    web_port = int(os.environ.get("WEB_PORT", config['web']['port']))
-    web_host = os.environ.get("WEB_HOST", config['web']['host'])
+    web_port = int(os.environ.get("WEB_PORT", config.web.port))
+    web_host = os.environ.get("WEB_HOST", config.web.host)
     fastapi_task = asyncio.create_task(run_fastapi(web_host, web_port))
 
     stop_event = asyncio.Event()
@@ -227,11 +188,13 @@ async def main():
         except NameError:
             pass
         try:
-            if selve_manager.gateway: await selve_manager.gateway.stopWorker()
+            if selve_manager.gateway:
+                await selve_manager.gateway.stopWorker()
         except Exception as e:
             logger.error(f"Error stopping Selve worker: {e}")
         mqtt_client.stop()
-        await asyncio.sleep(1) # Allow tasks to settle
+        await asyncio.sleep(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

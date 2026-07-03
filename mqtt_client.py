@@ -4,29 +4,69 @@ import paho.mqtt.client as mqtt
 from typing import Dict, Any, Callable, Optional
 
 from common import BaseComponent, setup_logger
+from models import AppConfig, MQTTConfig
 
 logger = setup_logger("selve2mqtt.mqtt")
 
+
 class MQTTClient(BaseComponent):
-    def __init__(self, config: Dict[str, Any], on_connect_cb=None, on_disconnect_cb=None, on_message_cb=None):
-        # Let BaseComponent initialise the logger; store config references.
+    """
+    MQTT client wrapping paho-mqtt for the selve2mqtt bridge.
+
+    Expects an AppConfig (or dict-like) instance as 'config'.  When a
+    fully-typed AppConfig is passed, all values are accessed as model
+    attributes; otherwise falls back to dict-style access for backward
+    compatibility.
+    """
+
+    def __init__(
+        self,
+        config: Any,
+        on_connect_cb: Optional[Callable] = None,
+        on_disconnect_cb: Optional[Callable] = None,
+        on_message_cb: Optional[Callable] = None,
+    ):
+        # Let BaseComponent initialise the logger
         super().__init__(config)
-        self.broker = config['mqtt']['broker']
-        self.port = config['mqtt'].get('port', 1883)
-        self.username = config['mqtt'].get('username', '')
-        self.password = config['mqtt'].get('password', '')
-        self.client_id = config['mqtt'].get('client_id', 'selve2mqtt')
-        self.discovery_prefix = config['mqtt'].get('discovery_prefix', 'homeassistant')
+
+        # Extract MQTT configuration – support both AppConfig/MQTTConfig objects and raw dicts
+        if isinstance(config, AppConfig):
+            mqtt_cfg: MQTTConfig = config.mqtt
+            self.broker = mqtt_cfg.broker
+            self.port = mqtt_cfg.port
+            self.username = mqtt_cfg.username
+            self.password = mqtt_cfg.password
+            self.client_id = mqtt_cfg.client_id
+            self.discovery_prefix = mqtt_cfg.discovery_prefix
+        elif isinstance(config, MQTTConfig):
+            self.broker = config.broker
+            self.port = config.port
+            self.username = config.username
+            self.password = config.password
+            self.client_id = config.client_id
+            self.discovery_prefix = config.discovery_prefix
+        else:
+            # Legacy dict-style access
+            mqtt_section = config.get('mqtt', {}) if isinstance(config, dict) else {}
+            self.broker = mqtt_section.get('broker', getattr(config, 'broker', 'localhost'))
+            self.port = mqtt_section.get('port', getattr(config, 'port', 1883))
+            self.username = mqtt_section.get('username', getattr(config, 'username', ''))
+            self.password = mqtt_section.get('password', getattr(config, 'password', ''))
+            self.client_id = mqtt_section.get('client_id', getattr(config, 'client_id', 'selve2mqtt'))
+            self.discovery_prefix = mqtt_section.get('discovery_prefix', getattr(config, 'discovery_prefix', 'homeassistant'))
 
         self.on_connect_cb = on_connect_cb
         self.on_disconnect_cb = on_disconnect_cb
         self.on_message_cb = on_message_cb
 
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.client_id)
+        self.client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION2,
+            client_id=self.client_id
+        )
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect
-        # Configure automatic reconnect delays (min, max)
+        # Configure automatic reconnect delays (min=1s, max=120s)
         self.safe_execute(
             lambda: self.client.reconnect_delay_set(1, 120),
             exc_msg="Older paho version – reconnect_delay_set not available",

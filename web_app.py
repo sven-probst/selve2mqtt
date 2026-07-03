@@ -5,10 +5,23 @@ from pathlib import Path
 from functools import lru_cache
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Query, Header, status
+from fastapi.security import HTTPBearer
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from translations import TRANSLATIONS
 from common import setup_logger
+
+from models import (
+    DeviceCommand,
+    DeviceRename,
+    GroupSave,
+    SensorRename,
+    SenderRename,
+    SenderTeachResult,
+    LearningResult,
+    StatusResponse,
+)
 
 logger = setup_logger("selve2mqtt.web")
 active_websockets: Set[WebSocket] = set()
@@ -20,34 +33,34 @@ _dashboard_token: Optional[str] = None
 # Global version storage
 _app_version: str = "dev"
 
+
 def set_app_version(version: str):
     """Sets the application version to be displayed in the UI."""
     global _app_version
     _app_version = version
+
 
 def set_dashboard_token(token: Optional[str]):
     """Sets the dashboard token from the main configuration."""
     global _dashboard_token
     _dashboard_token = token if token else None
 
+
 def verify_token(
     token: Optional[str] = Query(None, description="Access token via query parameter"),
-    x_access_token: Optional[str] = Header(None, description="Access token via X-Access-Token header")
+    x_access_token: Optional[str] = Header(None, description="Access token via X-Access-Token header"),
 ) -> bool:
     """
     Verify access token from query param or header.
     Returns True if authenticated or if no token is configured.
     """
     if not _dashboard_token:
-        # No token configured - auth disabled
         return True
-    
-    # Check query param first, then header
     provided_token = token or x_access_token
     if provided_token and provided_token == _dashboard_token:
         return True
-    
     return False
+
 
 async def broadcast_status_update(message_type: str, data: dict):
     """Broadcasts a status update to all connected WebSockets."""
@@ -60,62 +73,77 @@ async def broadcast_status_update(message_type: str, data: dict):
         except Exception:
             pass
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     for ws in list(active_websockets):
         await ws.close()
 
+
 app = FastAPI(title="Selve2MQTT Bridge", lifespan=lifespan)
+
+
+# Custom validation error handler for Pydantic-powered endpoints
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return a JSON 422 response with structured error details."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "status": "error",
+            "detail": exc.errors(),
+            "body": exc.body,
+        },
+    )
+
 
 async def require_auth(
     token: Optional[str] = Query(None),
-    x_access_token: Optional[str] = Header(None, alias="X-Access-Token")
+    x_access_token: Optional[str] = Header(None, alias="X-Access-Token"),
 ):
     """Dependency that raises 401 if token is required but invalid or missing."""
     if not verify_token(token, x_access_token):
-        raise HTTPException(status_code=401, detail="Authentication required. Provide token via ?token=xxx or X-Access-Token header")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Provide token via ?token=xxx or X-Access-Token header",
+        )
 
 
 # --- Middleware for global authentication (excludes websockets and /ws endpoint) ---
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """
-    Middleware that checks authentication for all routes except:
-    - Static assets (if any)
-    - /ws WebSocket endpoint (handled separately)
-    """
-    # Skip authentication if no token configured
+    """Check authentication for all routes except /ws, static files, and health."""
     if not _dashboard_token:
         return await call_next(request)
-    
-    # Skip /ws endpoint and favicon assets
+
     if request.url.path in ["/ws", "/favicon.ico", "/favicon.svg", "/health"]:
         return await call_next(request)
-    
-    # Allow the root path so the dashboard can load its own auth modal
+
     if request.url.path == "/" and request.method == "GET":
         return await call_next(request)
 
-    # Check token from query or header
     token = request.query_params.get("token") or request.headers.get("X-Access-Token")
     if token != _dashboard_token:
         return JSONResponse(
             status_code=401,
-            content={"detail": "Authentication required. Provide token via ?token=xxx or X-Access-Token header"}
+            content={
+                "detail": "Authentication required. Provide token via ?token=xxx or X-Access-Token header"
+            },
         )
-    
     return await call_next(request)
+
+
+# --- Static files & dashboard ---
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def get_favicon_ico():
-    # Serve the SVG as favicon.ico for broader compatibility
     return FileResponse("Logo.svg", media_type="image/svg+xml")
+
 
 @app.get("/favicon.svg", include_in_schema=False)
 async def get_favicon_svg():
-    # Serve the SVG directly
     return FileResponse("Logo.svg", media_type="image/svg+xml")
 
 
@@ -124,39 +152,31 @@ async def health_check():
     """Health check endpoint for Docker/K8s."""
     manager = app.state.selve_manager
     mqtt_client = app.state.mqtt_client
-    
     mqtt_ok = mqtt_client.is_connected
-    # Basic check if gateway exists and is initialized
     selve_ok = manager.gateway is not None
-    
     if not mqtt_ok or not selve_ok:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"status": "unhealthy", "mqtt": mqtt_ok, "selve": selve_ok}
+            content={"status": "unhealthy", "mqtt": mqtt_ok, "selve": selve_ok},
         )
-    
-    return {"status": "healthy"}
+    return {"status": "healthy", "mqtt": mqtt_ok, "selve": selve_ok}
+
 
 @lru_cache(maxsize=1)
 def get_template() -> str:
-    """Loads the dashboard HTML template from external file."""
+    """Load the dashboard HTML template from external file."""
     template_path = Path(__file__).parent / "templates" / "dashboard.html"
     return template_path.read_text(encoding="utf-8")
 
-def get_dashboard_html(lang_code):
-    # Nutze .copy(), um das globale TRANSLATIONS Dictionary nicht zu verändern
-    t = TRANSLATIONS.get(lang_code, TRANSLATIONS['en'])['ui'].copy()
 
-    # Metadaten injizieren, BEVOR das JSON für das Frontend generiert wird
+def get_dashboard_html(lang_code):
+    t = TRANSLATIONS.get(lang_code, TRANSLATIONS['en'])['ui'].copy()
     t['lang_code'] = lang_code
     t['app_version'] = _app_version
-
     html = get_template()
-    # Replace placeholders
     html = html.replace("__TITLE__", t.get('title', 'Selve2MQTT'))
     html = html.replace("__I18N__", json.dumps(t))
     html = html.replace("{{", "{").replace("}}", "}")
-    # Replace translation placeholders
     for key, val in t.items():
         try:
             html = html.replace("{" + key + "}", str(val))
@@ -164,19 +184,21 @@ def get_dashboard_html(lang_code):
             pass
     return html
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     manager = app.state.selve_manager
     return get_dashboard_html(manager.lang_code)
 
+
+# --- WebSocket ---
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
     """WebSocket endpoint with optional token authentication."""
-    # Check authentication if token is configured
     if _dashboard_token and token != _dashboard_token:
         await websocket.close(code=1008, reason="Authentication failed")
         return
-    
     await websocket.accept()
     active_websockets.add(websocket)
     manager = app.state.selve_manager
@@ -186,49 +208,93 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
             msg = json.loads(data)
             if msg.get('type') == 'request_full_state':
                 state = manager.get_full_state()
-                # Inject current MQTT status into the initial state
                 state['mqtt_connected'] = app.state.mqtt_client.is_connected
                 await websocket.send_json(state)
     except WebSocketDisconnect:
         active_websockets.remove(websocket)
 
-@app.post("/api/device/{device_id}/{command}")
-async def control_device(device_id: str, command: str, value: Optional[int] = None):
-    await app.state.selve_manager.handle_command(device_id, command, value)
-    return {"status": "ok"}
 
-@app.post("/api/device/{device_id}/learning")
+# --- Device endpoints ---
+
+@app.post(
+    "/api/device/{device_id}/{command}",
+    response_model=StatusResponse,
+)
+async def control_device(device_id: str, command: str, value: Optional[int] = Query(None)):
+    """Send a command to a device.
+
+    - `command`: one of `open`, `close`, `stop`, `position`, `pos1`, `pos2`
+    - `value`: required only for `position` (0–100)
+    """
+    # Validate with Pydantic before dispatching
+    try:
+        cmd = DeviceCommand(command=command, value=value)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    await app.state.selve_manager.handle_command(device_id, cmd.command, cmd.value)
+    return StatusResponse(status="ok")
+
+
+@app.post(
+    "/api/device/{device_id}/learning",
+    response_model=StatusResponse,
+)
 async def device_learning(device_id: str, enabled: bool):
     await app.state.selve_manager.set_device_learning_mode(device_id, enabled)
-    return {"status": "ok"}
+    return StatusResponse(status="ok")
 
-@app.post("/api/device/{device_id}/sender/{sender_index}/delete")
+
+@app.post(
+    "/api/device/{device_id}/sender/{sender_index}/delete",
+    response_model=StatusResponse,
+)
 async def delete_device_sender(device_id: str, sender_index: int):
     if await app.state.selve_manager.delete_device_sender(device_id, sender_index):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Sender deletion failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Sender deletion failed"),
+    )
+
 
 @app.get("/api/device/{device_id}/senders")
 async def get_device_senders(device_id: str):
     return await app.state.selve_manager.get_device_senders(device_id)
 
 
-@app.get("/api/sender/{sender_id}")
+# --- Sender endpoints ---
+
+@app.get("/api/sender/{sender_id}", response_model=dict)
 async def get_sender(sender_id: str):
     info = await app.state.selve_manager.get_sender_info(sender_id)
     if info:
         return info
     manager = app.state.selve_manager
-    raise HTTPException(status_code=404, detail=manager.i18n['api'].get('not_found', "Sender not found"))
+    raise HTTPException(
+        status_code=404,
+        detail=manager.i18n['api'].get('not_found', "Sender not found"),
+    )
 
 
-@app.post("/api/sender/{sender_id}/rename")
+@app.post(
+    "/api/sender/{sender_id}/rename",
+    response_model=StatusResponse,
+)
 async def rename_sender(sender_id: str, name: str):
+    # Validate with Pydantic
+    try:
+        SenderRename(name=name)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
     if await app.state.selve_manager.set_sender_label(sender_id, name):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Sender rename failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Sender rename failed"),
+    )
 
 
 @app.get("/api/senders")
@@ -236,12 +302,18 @@ async def list_senders():
     return await app.state.selve_manager.get_all_senders()
 
 
-@app.post("/api/sender/{sender_id}/delete")
+@app.post(
+    "/api/sender/{sender_id}/delete",
+    response_model=StatusResponse,
+)
 async def delete_sender(sender_id: str):
     if await app.state.selve_manager.delete_sender_global(sender_id):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Sender deletion failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Sender deletion failed"),
+    )
 
 
 @app.get("/api/sender/{sender_id}/values")
@@ -250,111 +322,230 @@ async def sender_values(sender_id: str):
     if vals:
         return vals
     manager = app.state.selve_manager
-    raise HTTPException(status_code=404, detail=manager.i18n['api'].get('not_found', "Sender values not available"))
+    raise HTTPException(
+        status_code=404,
+        detail=manager.i18n['api'].get('not_found', "Sender values not available"),
+    )
 
 
-@app.post("/api/sender/teach")
-async def sender_teach(timeout: int = 60):
-    """Starts a global sender teach/pairing mode. Returns status and discovered sender id on success."""
+@app.post(
+    "/api/sender/teach",
+    response_model=SenderTeachResult,
+)
+async def sender_teach(timeout: int = Query(default=60, ge=10, le=300)):
+    """Start a global sender teach/pairing mode."""
     res = await app.state.selve_manager.start_sender_teach(timeout)
     if res.get('status') == 'not_supported':
-        raise HTTPException(status_code=501, detail=app.state.selve_manager.i18n['api'].get('not_supported', 'Not supported by gateway'))
-    return res
+        raise HTTPException(
+            status_code=501,
+            detail=app.state.selve_manager.i18n['api'].get('not_supported', 'Not supported by gateway'),
+        )
+    return SenderTeachResult(**res)
 
 
-@app.post("/api/sender/teach/stop")
+@app.post(
+    "/api/sender/teach/stop",
+    response_model=StatusResponse,
+)
 async def sender_teach_stop():
     ok = await app.state.selve_manager.stop_sender_teach()
     if ok:
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Failed to stop sender teach or not supported"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Failed to stop sender teach or not supported"),
+    )
 
-@app.post("/api/group/{group_id}/{command}")
-async def control_group(group_id: str, command: str, value: Optional[int] = None):
-    await app.state.selve_manager.handle_command(group_id, command, value, is_group=True)
-    return {"status": "ok"}
 
-@app.post("/api/group/save")
+# --- Group endpoints ---
+
+@app.post(
+    "/api/group/{group_id}/{command}",
+    response_model=StatusResponse,
+)
+async def control_group(group_id: str, command: str, value: Optional[int] = Query(None)):
+    """Send a command to a group."""
+    try:
+        cmd = DeviceCommand(command=command, value=value)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+    await app.state.selve_manager.handle_command(group_id, cmd.command, cmd.value, is_group=True)
+    return StatusResponse(status="ok")
+
+
+@app.post(
+    "/api/group/save",
+    response_model=StatusResponse,
+)
 async def save_group(request: Request):
-    data = await request.json()
-    group_id = data.get("id")
-    name = data.get("name")
-    device_ids = data.get("device_ids", [])
-    if await app.state.selve_manager.save_group(group_id, name, device_ids):
-        return {"status": "ok"}
-    manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Group save failed"))
+    """Create or update a group."""
+    try:
+        body = await request.json()
+        payload = GroupSave(**body)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-@app.post("/api/group/{group_id}/delete")
+    if await app.state.selve_manager.save_group(payload.id, payload.name, payload.device_ids):
+        return StatusResponse(status="ok")
+    manager = app.state.selve_manager
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Group save failed"),
+    )
+
+
+@app.post(
+    "/api/group/{group_id}/delete",
+    response_model=StatusResponse,
+)
 async def delete_group(group_id: str):
     if await app.state.selve_manager.delete_group(group_id):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Group deletion failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Group deletion failed"),
+    )
 
-@app.post("/api/gateway/reset")
+
+# --- Gateway endpoints ---
+
+@app.post(
+    "/api/gateway/reset",
+    response_model=StatusResponse,
+)
 async def reset_gateway():
     manager = app.state.selve_manager
     if await manager.reset_gateway():
-        return {"status": "ok", "message": manager.i18n['api']['gw_reset_success']}
-    raise HTTPException(status_code=500, detail=manager.i18n['api']['gw_reset_failed'])
+        return StatusResponse(status="ok", message=manager.i18n['api']['gw_reset_success'])
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api']['gw_reset_failed'],
+    )
 
-@app.post("/api/gateway/config/{setting}")
-async def set_gateway_config(setting: str, enabled: bool):
+
+@app.post(
+    "/api/gateway/config/{setting}",
+    response_model=StatusResponse,
+)
+async def set_gateway_config(setting: str, enabled: bool = Query(...)):
+    """Toggle a gateway setting (led, forward)."""
     if setting == "led":
         await app.state.selve_manager.set_gateway_led(enabled)
     elif setting == "forward":
         await app.state.selve_manager.set_gateway_forwarding(enabled)
     else:
-        raise HTTPException(status_code=400, detail=app.state.selve_manager.i18n['api']['err_unknown_setting'])
-    return {"status": "ok"}
+        raise HTTPException(
+            status_code=400,
+            detail=app.state.selve_manager.i18n['api']['err_unknown_setting'],
+        )
+    return StatusResponse(status="ok")
 
-@app.post("/api/sensor/{sensor_id}/rename")
+
+# --- Sensor endpoints ---
+
+@app.post(
+    "/api/sensor/{sensor_id}/rename",
+    response_model=StatusResponse,
+)
 async def rename_sensor(sensor_id: str, name: str):
+    try:
+        SensorRename(name=name)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
     if await app.state.selve_manager.rename_sensor(sensor_id, name):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Sensor renaming failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Sensor renaming failed"),
+    )
 
-@app.post("/api/device/{device_id}/rename")
+
+@app.post(
+    "/api/device/{device_id}/rename",
+    response_model=StatusResponse,
+)
 async def rename_device(device_id: str, name: str):
+    try:
+        DeviceRename(name=name)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
     if await app.state.selve_manager.rename_device(device_id, name):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Device renaming failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Device renaming failed"),
+    )
 
-@app.post("/api/device/{device_id}/delete")
+
+@app.post(
+    "/api/device/{device_id}/delete",
+    response_model=StatusResponse,
+)
 async def delete_device(device_id: str):
     if await app.state.selve_manager.delete_device(device_id):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Device deletion failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Device deletion failed"),
+    )
 
-@app.post("/api/sensor/{sensor_id}/delete")
+
+@app.post(
+    "/api/sensor/{sensor_id}/delete",
+    response_model=StatusResponse,
+)
 async def delete_sensor(sensor_id: str):
     if await app.state.selve_manager.delete_sensor(sensor_id):
-        return {"status": "ok"}
+        return StatusResponse(status="ok")
     manager = app.state.selve_manager
-    raise HTTPException(status_code=500, detail=manager.i18n['api'].get('err_generic_fail', "Sensor deletion failed"))
+    raise HTTPException(
+        status_code=500,
+        detail=manager.i18n['api'].get('err_generic_fail', "Sensor deletion failed"),
+    )
 
-@app.post("/api/learn")
-async def start_learning(timeout: int = 60):
+
+@app.post(
+    "/api/learn",
+    response_model=LearningResult,
+)
+async def start_learning(timeout: int = Query(default=60, ge=10, le=300)):
+    """Start device learning (actor) mode."""
     manager = app.state.selve_manager
-    # Triggering learning mode
     found = await manager.start_learning_mode(timeout)
-    # Always refresh to ensure we have the latest state from the gateway
     await manager.discover()
     if found:
-        return {"status": "success", "message": manager.i18n['api']['learn_success']}
-    return {"status": "timeout", "message": manager.i18n['api']['learn_timeout']}
+        return LearningResult(
+            status="success",
+            message=manager.i18n['api']['learn_success'],
+        )
+    return LearningResult(
+        status="timeout",
+        message=manager.i18n['api']['learn_timeout'],
+    )
 
-@app.post("/api/learn_sensor")
-async def start_sensor_learning(timeout: int = 60):
+
+@app.post(
+    "/api/learn_sensor",
+    response_model=LearningResult,
+)
+async def start_sensor_learning(timeout: int = Query(default=60, ge=10, le=300)):
+    """Start sensor learning (teach-in) mode."""
     manager = app.state.selve_manager
-    # Triggering sensor teach-in mode (Spec Page 38)
     found = await manager.start_sensor_learning_mode(timeout)
     await manager.discover()
     if found:
-        return {"status": "success", "message": manager.i18n['api']['sensor_success']}
-    return {"status": "timeout", "message": manager.i18n['api']['sensor_timeout']}
+        return LearningResult(
+            status="success",
+            message=manager.i18n['api']['sensor_success'],
+        )
+    return LearningResult(
+        status="timeout",
+        message=manager.i18n['api']['sensor_timeout'],
+    )
