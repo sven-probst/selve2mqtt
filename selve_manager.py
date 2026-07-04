@@ -4,7 +4,8 @@ import json
 import urllib.request
 from typing import Dict, Any, Set, Optional
 from selve import Selve
-from selve.util.protocol import MovementState
+from selve.util.protocol import MovementState, CommunicationType
+from selve.util import SelveTypes
 from translations import TRANSLATIONS
 from common import BaseComponent, setup_logger, PendingResponse
 
@@ -154,15 +155,7 @@ class SelveManager(BaseComponent):
 
     async def setup(self):
         # Cancel any existing tasks to prevent leaks on reconnect
-        for attr in ('_keepalive_task', '_cmd_worker_task'):
-            task = getattr(self, attr, None)
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                setattr(self, attr, None)
+        await self._cancel_background_tasks()
 
         # Determine port
         if isinstance(self.config, AppConfig):
@@ -203,6 +196,35 @@ class SelveManager(BaseComponent):
         except Exception as e:
             self.log.error('err_gw_setup', e=str(e))
             raise e
+
+    async def _cancel_background_tasks(self):
+        """Cancel background tasks (_keepalive_task, _cmd_worker_task)."""
+        for attr in ('_keepalive_task', '_cmd_worker_task'):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                setattr(self, attr, None)
+
+    async def shutdown(self):
+        """Graceful shutdown: cancel background workers and drain the command queue."""
+        logger.info("Shutting down SelveManager...")
+
+        # 1) Cancel background tasks
+        await self._cancel_background_tasks()
+
+        # 2) Drain the command queue (cancel all pending futures)
+        while not self._cmd_queue.empty():
+            try:
+                _, future = self._cmd_queue.get_nowait()
+                if not future.done():
+                    future.cancel()
+                self._cmd_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
 
     async def _keepalive_loop(self):
         """Ping every 45 s to prevent the 60 s idle-reconnect in serial_transport."""
@@ -524,30 +546,43 @@ class SelveManager(BaseComponent):
             if hasattr(dev, '__dict__'):
                 logger.debug(f"DEBUG: Dict: {dev.__dict__}")
 
-            comm_type = self._get_attr(dev, 'communication_type')
-            if comm_type is None:
-                comm_type = self._get_attr(dev, 'communicationType')
-            if comm_type is None:
-                comm_type = self._get_attr(dev, 'comm_type', 1)
+            # --------------------------------------------------------------
+            # Communication type detection (bidirectional Commeo vs. one-way Iveo)
+            # --------------------------------------------------------------
+            # Primary: use device_type (SelveTypes enum — "device" or "iveo")
+            is_iveo = False
+            dev_type = self._get_attr(dev, 'device_type', None)
+            if dev_type is not None:
+                if hasattr(dev_type, 'value'):
+                    is_iveo = dev_type.value == SelveTypes.IVEO.value
+                else:
+                    is_iveo = str(dev_type) == str(SelveTypes.IVEO.value)
 
-            comm_type_int = 1
-            if comm_type is not None:
-                if hasattr(comm_type, 'value'):
-                    comm_type_int = comm_type.value
-                elif isinstance(comm_type, (int, str)):
-                    comm_type_int = int(comm_type)
+            # Fallback: check communicationType attribute
+            # (SelveDevice defaults to CommunicationType.COMMEO (0),
+            #  IveoDevice defaults to CommunicationType.IVEO (1))
+            if dev_type is None:
+                comm_type = self._get_attr(dev, 'communicationType', None)
+                if comm_type is not None:
+                    if hasattr(comm_type, 'value'):
+                        is_iveo = comm_type.value == CommunicationType.IVEO.value
+                    else:
+                        try:
+                            is_iveo = int(comm_type) == CommunicationType.IVEO.value
+                        except (ValueError, TypeError):
+                            is_iveo = "iveo" in str(comm_type).lower()
 
-            comm_str = str(comm_type).upper()
-            logger.debug(f"DEBUG: comm_type string: {comm_str}")
-            is_bidir = ("COMMEO" in comm_str) or ("Commeo" in dev.__class__.__name__)
-            if not is_bidir and comm_type_int is not None:
-                logger.debug(f"DEBUG: comm_type_int: {comm_type_int}")
-                is_bidir = (comm_type_int == 0)
+            is_bidir = not is_iveo
 
+            # --------------------------------------------------------------
+            # Device sub-type for HA device class
+            # --------------------------------------------------------------
+            # device_sub_type is a DeviceType enum (values: 1=shutter, 2=blind, …).
+            # Fallback: config attribute or default 1 (shutter).
             config_val = self._get_attr(
                 dev, 'device_sub_type',
-                self._get_attr(dev, 'device_type', self._get_attr(dev, 'config', 1)),
-            )
+                self._get_attr(dev, 'config', 1),
+        )
             if hasattr(config_val, 'value'):
                 config_val = config_val.value
 
@@ -917,22 +952,7 @@ class SelveManager(BaseComponent):
 
         self._state_cache[dev_id] = current_state
 
-        # Publish via MQTT
-        if current_state.position is not None:
-            self.mqtt.publish(f"selve/{dev_id}/position", current_state.position, retain=True)
-        self.mqtt.publish(
-            f"selve/{dev_id}/moving", "ON" if current_state.moving else "OFF", retain=True,
-        )
-        self.mqtt.publish(f"selve/{dev_id}/selve_raw_value", current_state.selve_raw_value, retain=True)
-        # Publish cover state string for HA state_topic
-        cover_state = self._get_cover_state_string(current_state)
-        self.mqtt.publish(f"selve/{dev_id}/cover_state", cover_state, retain=True)
-        self.mqtt.publish(
-            f"selve/{dev_id}/unreachable",
-            "OFF" if current_state.unreachable else "ON",
-            retain=True,
-        )
-        self.mqtt.publish(f"selve/{dev_id}/state", current_state.model_dump(), retain=True)
+        self._publish_device_state_mqtt_ws(dev_id, current_state)
 
         self.log.info(
             'update_received',
@@ -941,15 +961,6 @@ class SelveManager(BaseComponent):
             moving=current_state.moving,
             raw=current_state.selve_raw_value,
         )
-
-        if self.active_websockets:
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast_ws(
-                    dev_id=dev_id,
-                    state=current_state,
-                ),
-                self.loop,
-            )
 
     # ------------------------------------------------------------------
     # WebSocket broadcasts
@@ -1033,30 +1044,6 @@ class SelveManager(BaseComponent):
             )
         except Exception as e:
             logger.warning(f"Could not refresh gateway state: {e}")
-
-    async def _poll_until_stopped(self, device_id: str, device, max_retries: int = 10, delay: float = 0.5):
-        """Poll device until moving=False or max_retries reached."""
-        stable_count = 0
-        for i in range(max_retries):
-            await asyncio.sleep(delay)
-            try:
-                if hasattr(device, 'id'):
-                    await self.gateway.updateCommeoDeviceValues(device.id)
-                else:
-                    await self.gateway.updateCommeoDeviceValues(int(device_id))
-                props = self._get_device_properties(device)
-                await self._publish_state(device_id)
-                if not props.moving:
-                    stable_count += 1
-                    if stable_count >= 2:
-                        logger.info(f"Device {device_id} confirmed stopped at position {props.position}%")
-                        return True
-                else:
-                    stable_count = 0
-            except Exception as e:
-                logger.warning(f"Polling error for {device_id} (attempt {i+1}): {e}")
-        logger.warning(f"Device {device_id} stop confirmation timeout")
-        return False
 
     # ------------------------------------------------------------------
     # Command handling
@@ -1162,8 +1149,18 @@ class SelveManager(BaseComponent):
                             update={"moving": False, "movement_direction": "stopped"}
                         )
                     elif command == "position" and value is not None:
+                        # Derive direction from current vs. target position
+                        target_pos = int(value)
+                        if current.position is not None:
+                            direction = "opening" if target_pos > current.position else "closing"
+                        else:
+                            direction = None
                         optimistic = current.model_copy(
-                            update={"position": int(value), "moving": True, "movement_direction": None}
+                            update={"position": target_pos, "moving": True, "movement_direction": direction}
+                        )
+                    elif command in ("pos1", "pos2"):
+                        optimistic = current.model_copy(
+                            update={"moving": True, "movement_direction": None}
                         )
 
                 if optimistic:
@@ -1187,8 +1184,38 @@ class SelveManager(BaseComponent):
             )
             raise
 
+    def _publish_device_state_mqtt_ws(self, device_id: str, state: DeviceState):
+        """Publish a single device state to MQTT topics and broadcast via WebSocket.
+
+        This is the single canonical implementation used by both
+        ``_handle_device_state_change`` and ``_publish_state``.
+        """
+        if state.position is not None:
+            self.mqtt.publish(f"selve/{device_id}/position", state.position, retain=True)
+        self.mqtt.publish(
+            f"selve/{device_id}/moving", "ON" if state.moving else "OFF", retain=True,
+        )
+        self.mqtt.publish(f"selve/{device_id}/selve_raw_value", state.selve_raw_value, retain=True)
+        cover_state = self._get_cover_state_string(state)
+        self.mqtt.publish(f"selve/{device_id}/cover_state", cover_state, retain=True)
+        self.mqtt.publish(
+            f"selve/{device_id}/unreachable",
+            "OFF" if state.unreachable else "ON",
+            retain=True,
+        )
+        self.mqtt.publish(f"selve/{device_id}/state", state.model_dump(), retain=True)
+
+        if self.active_websockets:
+            asyncio.create_task(self.broadcast_ws(device_id, state))
+
     async def _publish_state(self, device_id: str, forced_state: Optional[DeviceState] = None):
-        """Publish device state to MQTT and broadcast via WebSocket."""
+        """Publish device state to MQTT and broadcast via WebSocket.
+
+        When called with ``forced_state``, the state is published directly to
+        MQTT/WebSocket *without* updating the internal cache. This ensures
+        that subsequent real callbacks still detect a difference and publish
+        the authoritative state.
+        """
         try:
             device = self.devices.get(device_id)
             if not device:
@@ -1203,33 +1230,16 @@ class SelveManager(BaseComponent):
                     logger.warning(f"Could not get device state for {device_id}: {e}")
                     return
 
-            if current_state.position is None:
-                return
+                if current_state.position is None:
+                    return
 
-            if self._state_cache.get(device_id) == current_state:
-                return
+                # Skip publishing if state hasn't changed (real updates only)
+                if self._state_cache.get(device_id) == current_state:
+                    return
 
             self._state_cache[device_id] = current_state
 
-            self.mqtt.publish(f"selve/{device_id}/position", current_state.position, retain=True)
-            self.mqtt.publish(
-                f"selve/{device_id}/moving", "ON" if current_state.moving else "OFF", retain=True,
-            )
-            self.mqtt.publish(
-                f"selve/{device_id}/selve_raw_value", current_state.selve_raw_value, retain=True,
-            )
-            # Publish cover state string for HA state_topic
-            cover_state = self._get_cover_state_string(current_state)
-            self.mqtt.publish(f"selve/{device_id}/cover_state", cover_state, retain=True)
-            self.mqtt.publish(
-                f"selve/{device_id}/unreachable",
-                "OFF" if current_state.unreachable else "ON",
-                retain=True,
-            )
-            self.mqtt.publish(f"selve/{device_id}/state", current_state.model_dump(), retain=True)
-
-            if self.active_websockets:
-                asyncio.create_task(self.broadcast_ws(device_id, current_state))
+            self._publish_device_state_mqtt_ws(device_id, current_state)
         except Exception as e:
             logger.error(f"State publish error for {device_id}: {e}")
 
@@ -1665,6 +1675,4 @@ class SelveManager(BaseComponent):
         except Exception as e:
             self.log.warning('err_fw_fetch', e=e)
             return False
-
-
 

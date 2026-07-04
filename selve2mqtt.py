@@ -37,9 +37,16 @@ def load_config(config_file: str = "config.yaml") -> AppConfig:
 logger = setup_logger("selve2mqtt.main")
 
 
+# Global reference to the uvicorn server for graceful shutdown
+_uvicorn_server: Optional[uvicorn.Server] = None
+
+
 async def run_fastapi(host: str, port: int):
+    """Run the FastAPI/uvicorn server and keep a global reference for shutdown."""
+    global _uvicorn_server
     config_uv = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    await uvicorn.Server(config_uv).serve()
+    _uvicorn_server = uvicorn.Server(config_uv)
+    await _uvicorn_server.serve()
 
 
 async def main():
@@ -182,19 +189,50 @@ async def main():
         await stop_event.wait()
     finally:
         logger.info("Shutting down...")
-        fastapi_task.cancel()
-        try:
+
+        # 1) Gracefully stop the uvicorn web server
+        # Signal should_exit so it stops its internal loop naturally
+        if _uvicorn_server is not None:
+            _uvicorn_server.should_exit = True
+            try:
+                await asyncio.wait_for(fastapi_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                # If graceful shutdown times out, cancel the task
+                if not fastapi_task.done():
+                    fastapi_task.cancel()
+                    try:
+                        await fastapi_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+        # 2) Gracefully stop the periodic update task
+        if not periodic_task.done():
             periodic_task.cancel()
-        except NameError:
-            pass
+            try:
+                await periodic_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # 3) Stop Selve manager background workers
+        if selve_manager:
+            try:
+                await selve_manager.shutdown()
+            except Exception as e:
+                logger.error(f"Error stopping Selve manager: {e}")
+
+        # 4) Stop the gateway worker
         try:
             if selve_manager.gateway:
                 await selve_manager.gateway.stopWorker()
         except Exception as e:
             logger.error(f"Error stopping Selve worker: {e}")
+
+        # 5) Stop MQTT client
         mqtt_client.stop()
-        await asyncio.sleep(1)
+
+        logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

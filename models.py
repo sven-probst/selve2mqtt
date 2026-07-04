@@ -191,7 +191,7 @@ class WebConfig(BaseModel):
 # Top-level application configuration
 # ---------------------------------------------------------------------------
 
-LANGUAGE_CODES = {"de", "en"}
+LANGUAGE_CODES = {"de", "en", "es", "fr", "nl", "pt", "it"}
 
 
 class AppConfig(BaseModel):
