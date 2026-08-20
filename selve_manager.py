@@ -944,6 +944,17 @@ class SelveManager(BaseComponent):
         if old_state == current_state:
             return
 
+        # While a command is awaiting its response, the gateway may echo the
+        # pre-command position back. Publish such intermediate callbacks would
+        # overwrite the optimistic value already broadcast by handle_command and
+        # make the UI temporarily show the old position again. The pending
+        # response is still signalled (see _process_entity_update), so
+        # handle_command proceeds normally; the settled state is published once
+        # the command has completed.
+        if dev_id in self._pending_responses.active_device_ids:
+            logger.debug(f"Ignoring intermediate device update for {dev_id} while command in flight")
+            return
+
         if old_state and old_state.unreachable != current_state.unreachable:
             if current_state.unreachable:
                 self.log.warning('device_unreachable', name=current_state.name, id=dev_id)
@@ -1090,6 +1101,18 @@ class SelveManager(BaseComponent):
             if not is_group:
                 self._pending_responses.expect(device_id)
 
+            # Log the command BEFORE dispatching it. The gateway callbacks
+            # fire *during* the dispatch, so logging afterwards makes the
+            # resulting state update appear before the command in the log.
+            logs = self.i18n.get('logs', {})
+            target_type = logs.get('type_group', 'group') if is_group else logs.get('type_device', 'device')
+            log_params = dict(cmd=command, type=target_type, id=device_id)
+            if command == "position" and value is not None:
+                log_params['val'] = f" (Ziel: {int(value)}%)."
+            else:
+                log_params['val'] = "."
+            self.log.info('cmd_sent', **log_params)
+
             if command == "position" and value is not None:
                 try:
                     await self._dispatch(self.gateway.moveDevicePos(device, selve_pos))
@@ -1136,15 +1159,6 @@ class SelveManager(BaseComponent):
                         f"{'group' if is_group else 'device'} {device_id} failed: {e}",
                         exc_info=True,
                     )
-
-            logs = self.i18n.get('logs', {})
-            target_type = logs.get('type_group', 'group') if is_group else logs.get('type_device', 'device')
-            log_params = dict(cmd=command, type=target_type, id=device_id)
-            if command == "position" and value is not None:
-                log_params['val'] = f" (Ziel: {int(value)}%)."
-            else:
-                log_params['val'] = "."
-            self.log.info('cmd_sent', **log_params)
 
             # Publish optimistic state for devices
             if not is_group:
