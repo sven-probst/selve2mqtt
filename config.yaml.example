@@ -7,6 +7,15 @@ mqtt:
   client_id: "selve2mqtt"
   discovery_prefix: "homeassistant"   # for Home Assistant MQTT Discovery
 
+  # TLS / SSL Settings (optional)
+  tls_enabled: false        # Set to true to connect via TLS/SSL (port auto-switched to 8883)
+  tls_ca_certs: null        # Path to CA certificate file (null = system default CA bundle)
+  tls_certfile: null        # Client certificate path for mutual TLS (mTLS) – leave null if unused
+  tls_keyfile: null         # Client private key path for mutual TLS (mTLS) – leave null if unused
+  tls_keyfile_password: null # Password for encrypted client private key – leave null if unused
+  tls_insecure: false       # Skip hostname verification (only for self-signed certs / testing)
+  tls_version: "auto"       # TLS version: "auto", "tlsv1_2", "tlsv1_3"
+
 # Selve USB-RF Gateway
 selve:
   port: "/dev/ttyUSB0"     # USB-Serial Port

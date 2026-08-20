@@ -979,14 +979,18 @@ class SelveManager(BaseComponent):
             "overload": state.overload,
             "auto_mode": state.auto_mode,
         }
+        dead = []
         for ws in list(self.active_websockets):
             try:
                 await ws.send_json(payload)
             except Exception:
-                pass
+                dead.append(ws)
+        for ws in dead:
+            self.active_websockets.discard(ws)
 
     async def broadcast_gateway_ws(self, duty_cycle: int, duty_blocked: bool):
         """Send gateway diagnostics to all connected WebSocket clients."""
+        dead = []
         for ws in list(self.active_websockets):
             try:
                 await ws.send_json({
@@ -995,12 +999,15 @@ class SelveManager(BaseComponent):
                     "duty_blocked": duty_blocked,
                 })
             except Exception:
-                pass
+                dead.append(ws)
+        for ws in dead:
+            self.active_websockets.discard(ws)
 
     async def broadcast_sensor_ws(self, sensor, value):
         """Send sensor update to all connected WebSocket clients."""
         sens_id = str(sensor.id)
         meta = self._get_sensor_metadata(sensor)
+        dead = []
         for ws in list(self.active_websockets):
             try:
                 await ws.send_json({
@@ -1010,10 +1017,13 @@ class SelveManager(BaseComponent):
                     "unit": meta["unit"],
                 })
             except Exception:
-                pass
+                dead.append(ws)
+        for ws in dead:
+            self.active_websockets.discard(ws)
 
     async def broadcast_sender_ws(self, sender_id: str, event_code: int):
         """Send sender event to all connected WebSocket clients."""
+        dead = []
         for ws in list(self.active_websockets):
             try:
                 await ws.send_json({
@@ -1022,7 +1032,9 @@ class SelveManager(BaseComponent):
                     "event": event_code,
                 })
             except Exception:
-                pass
+                dead.append(ws)
+        for ws in dead:
+            self.active_websockets.discard(ws)
 
     # ------------------------------------------------------------------
     # Gateway state refresh
@@ -1064,15 +1076,21 @@ class SelveManager(BaseComponent):
             return
 
         try:
-            if not is_group:
-                self._pending_responses.expect(device_id)
-
+            # Validate the position FIRST, so an invalid command never
+            # registers a pending response that would otherwise leak.
             if command == "position" and value is not None:
                 pos_val = int(value)
                 if not (0 <= pos_val <= 100):
                     self.log.warning('err_pos_range', pos=pos_val, id=device_id)
                     return
                 selve_pos = self._to_selve_position(pos_val)
+
+            # Register the pending response BEFORE dispatching so an early
+            # reply is still captured; wait() removes it again on exit.
+            if not is_group:
+                self._pending_responses.expect(device_id)
+
+            if command == "position" and value is not None:
                 try:
                     await self._dispatch(self.gateway.moveDevicePos(device, selve_pos))
                     logger.debug(f"Calling gateway.moveDevicePos(device {device_id}, {selve_pos})")
@@ -1178,6 +1196,10 @@ class SelveManager(BaseComponent):
                     await self._publish_state(device_id)
 
         except Exception as e:
+            # On abnormal exit the pending `wait()` is never reached, so drop
+            # any registered future to avoid a memory leak.
+            if not is_group:
+                self._pending_responses.remove(device_id)
             logger.error(
                 f"Command error ({command}) on "
                 f"{'group' if is_group else 'device'} {device_id}: {e}"
@@ -1206,7 +1228,10 @@ class SelveManager(BaseComponent):
         self.mqtt.publish(f"selve/{device_id}/state", state.model_dump(), retain=True)
 
         if self.active_websockets:
-            asyncio.create_task(self.broadcast_ws(device_id, state))
+            # Schedule the broadcast without blocking the gateway callback.
+            # run_coroutine_threadsafe keeps a reference to the wrapping Future
+            # so the task cannot be garbage-collected mid-send.
+            asyncio.run_coroutine_threadsafe(self.broadcast_ws(device_id, state), self.loop)
 
     async def _publish_state(self, device_id: str, forced_state: Optional[DeviceState] = None):
         """Publish device state to MQTT and broadcast via WebSocket.

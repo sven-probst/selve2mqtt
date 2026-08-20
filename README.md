@@ -16,6 +16,7 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 - **Sender (Remote) Management:** List, rename, delete, and teach-in remote controls.
 - **Sensor Support:** Read values from Selve sensors (wind, rain, light, temperature).
 - **Secure API:** Optional token-based authentication for the web dashboard and REST API.
+- **MQTT TLS/SSL:** Optional encrypted connection to the MQTT broker (TLS 1.2/1.3, CA verification, mutual TLS/mTLS, self-signed certificates).
 - **Command Serialisation:** Automatic queue delay between gateway commands to prevent "Command overwritten" races.
 - **Keepalive / Reconnect:** Automatic pings and reconnection handling for the Selve gateway.
 - **Docker / Podman ready:** Official container image with health checks.
@@ -70,6 +71,8 @@ services:
       - "/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_DM01F387-if00-port0:/dev/tty-selve"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      # TLS certificates (uncomment if using TLS with custom CA or mTLS)
+      # - ./certs:/app/certs:ro
       # Required for serial device metadata and stable paths
       - /run/udev:/run/udev:ro
       - /dev/serial:/dev/serial:ro
@@ -107,6 +110,8 @@ ContainerName=selve2mqtt
 # Persistent device path (check /dev/serial/by-id/)
 AddDevice=/dev/serial/by-id/usb-FTDI_FT230X_Basic_UART_DM01F387-if00-port0:/dev/tty-selve
 Volume=%h/selve2mqtt/config.yaml:/app/config.yaml:ro
+# TLS certificates (uncomment if using TLS with custom CA or mTLS)
+# Volume=%h/selve2mqtt/certs:/app/certs:ro
 # Required for serial device metadata and stable paths
 Volume=/run/udev:/run/udev:ro
 Volume=/dev/serial:/dev/serial:ro
@@ -140,12 +145,85 @@ systemctl --user start selve2mqtt
 The `config.yaml` file allows you to configure your MQTT broker and gateway settings. Key settings include:
 
 - `mqtt`: Connection details for your broker.
+- `mqtt.tls_enabled`: Set to `true` to connect via TLS/SSL (see [MQTT TLS/SSL](#mqtt-tlsssl) below).
 - `selve.port`: The serial port of your USB stick (e.g., `/dev/ttyUSB0`). Leave empty for auto-detection.
 - `selve.open_close_fix`: If `true`, position endpoints are corrected (0-1% → 0%, 99-100% → 100%).
 - `selve.command_delay_ms`: Delay (ms) between gateway commands to prevent "Command overwritten" races.
 - `dashboard_token`: Set a password/token to protect your web dashboard.
 - `discovery_interval`: Seconds between MQTT discovery runs (0 = disabled).
 - `update_interval`: Seconds between periodic state updates.
+
+## MQTT TLS/SSL
+
+The bridge supports encrypted MQTT connections via TLS/SSL. Enable it by setting `tls_enabled: true` in your `config.yaml`. When enabled, the port is automatically switched from `1883` to `8883` (the standard MQTT-over-TLS port) unless you specify a custom port.
+
+### Simple TLS (server certificate verification)
+
+This is the most common setup. The bridge verifies the broker's certificate against the system's default CA bundle (or a custom CA file).
+
+```yaml
+mqtt:
+  broker: "mqtt.example.com"
+  port: 8883
+  username: "selve"
+  password: "secret"
+  tls_enabled: true
+```
+
+### TLS with custom CA certificate
+
+If your broker uses a self-signed certificate or a private CA, provide the CA file:
+
+```yaml
+mqtt:
+  broker: "192.168.1.100"
+  port: 8883
+  tls_enabled: true
+  tls_ca_certs: "/app/certs/ca.pem"
+```
+
+### TLS with self-signed certificate (skip verification)
+
+For development or testing with self-signed certificates where hostname verification should be skipped:
+
+```yaml
+mqtt:
+  broker: "192.168.1.100"
+  port: 8883
+  tls_enabled: true
+  tls_insecure: true    # ⚠️ Reduces security – only for testing!
+```
+
+> **Warning:** `tls_insecure: true` disables hostname verification. Only use this for testing or with self-signed certificates on trusted networks. Production systems should always verify certificates.
+
+### Mutual TLS (mTLS) with client certificate
+
+For maximum security, the broker can require a client certificate. Provide both `tls_certfile` and `tls_keyfile`:
+
+```yaml
+mqtt:
+  broker: "mqtt.example.com"
+  port: 8883
+  tls_enabled: true
+  tls_ca_certs: "/app/certs/ca.pem"
+  tls_certfile: "/app/certs/client.pem"
+  tls_keyfile: "/app/certs/client-key.pem"
+  tls_keyfile_password: "key-password"   # optional, for encrypted key files
+```
+
+> **Note:** `tls_certfile` and `tls_keyfile` must always be provided together. Setting only one will result in a configuration error.
+
+### TLS configuration reference
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `tls_enabled` | bool | `false` | Enable TLS/SSL encrypted connection |
+| `tls_ca_certs` | string | `null` | Path to CA certificate file (`null` = system default CA bundle) |
+| `tls_certfile` | string | `null` | Client certificate path for mutual TLS (mTLS) |
+| `tls_keyfile` | string | `null` | Client private key path for mutual TLS (mTLS) |
+| `tls_keyfile_password` | string | `null` | Password for encrypted client private key |
+| `tls_insecure` | bool | `false` | Skip hostname verification (only for self-signed certs / testing) |
+| `tls_version` | string | `"auto"` | TLS protocol version: `"auto"`, `"tlsv1_2"`, `"tlsv1_3"` |
 
 ## Smart Home Integration
 

@@ -147,19 +147,70 @@ class MQTTConfig(BaseModel):
         description="Home Assistant MQTT discovery prefix.",
     )
 
+    # TLS / SSL settings
+    tls_enabled: bool = Field(
+        default=False,
+        description="Enable TLS/SSL encrypted connection to the MQTT broker.",
+    )
+    tls_ca_certs: Optional[str] = Field(
+        default=None,
+        description="Path to CA certificate file for TLS verification. "
+                    "None = use system default CA bundle.",
+    )
+    tls_certfile: Optional[str] = Field(
+        default=None,
+        description="Path to client certificate file for mutual TLS (mTLS).",
+    )
+    tls_keyfile: Optional[str] = Field(
+        default=None,
+        description="Path to client private key file for mutual TLS (mTLS).",
+    )
+    tls_keyfile_password: Optional[str] = Field(
+        default=None,
+        description="Password for encrypted client private key file.",
+    )
+    tls_insecure: bool = Field(
+        default=False,
+        description="Skip verification of the broker's hostname in the certificate. "
+                    "Useful for self-signed certs but reduces security.",
+    )
+    tls_version: str = Field(
+        default="auto",
+        description="TLS protocol version: 'auto', 'tlsv1_2', 'tlsv1_3'.",
+    )
+
     @model_validator(mode="after")
     def check_credentials_consistency(self) -> "MQTTConfig":
         """If a username is provided, a password must also be set (can be empty)."""
         # This is just a consistency check – empty password is allowed with username.
         return self
 
-
+    @model_validator(mode="after")
+    def check_tls_consistency(self) -> "MQTTConfig":
+        """Validate TLS-related field combinations."""
+        if self.tls_enabled:
+            # Suggest standard TLS port if user left the default non-TLS port
+            if self.port == 1883:
+                self.port = 8883
+            # Warn: tls_insecure defeats the purpose of CA verification
+            if self.tls_insecure and self.tls_ca_certs:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "tls_ca_certs is set but tls_insecure=true – "
+                    "the CA certificate will be ignored for hostname verification."
+                )
+            # mTLS requires both cert and key (or neither)
+            if (self.tls_certfile is None) != (self.tls_keyfile is None):
+                raise ValueError(
+                    "For mutual TLS (mTLS), both 'tls_certfile' and 'tls_keyfile' "
+                    "must be provided together, or both must be omitted."
+                )
+        return self
 # ---------------------------------------------------------------------------
 # Web server configuration
 # ---------------------------------------------------------------------------
 
 HOST_PATTERN = re.compile(r"^[a-zA-Z0-9.*_-]+$")
-
 
 class WebConfig(BaseModel):
     """Configuration for the built-in FastAPI/webserver."""
@@ -258,7 +309,7 @@ class DeviceState(BaseModel):
     )
     name: str = Field(default="Unknown", description="Human-readable device name/label.")
     unreachable: bool = Field(default=False, description="Device is not reachable.")
-    obstructed: bool = Field(default=False, description="Device movement is obstructed.")
+    obstrucated: bool = Field(default=False, description="Device movement is obstructed.")
     overload: bool = Field(default=False, description="Device reports overload.")
     auto_mode: bool = Field(default=False, description="Automatic mode is enabled.")
     selve_raw_value: int = Field(default=0, ge=0, le=100, description="Raw Selve position (0=open, 100=closed).")

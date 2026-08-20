@@ -67,17 +67,21 @@ async def broadcast_status_update(message_type: str, data: dict):
     if not active_websockets:
         return
     payload = {"type": message_type, **data}
+    dead = []
     for ws in list(active_websockets):
         try:
             await ws.send_json(payload)
         except Exception:
-            pass
+            dead.append(ws)
+    for ws in dead:
+        active_websockets.discard(ws)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     for ws in list(active_websockets):
+        active_websockets.discard(ws)
         await ws.close()
 
 
@@ -211,7 +215,15 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
                 state['mqtt_connected'] = app.state.mqtt_client.is_connected
                 await websocket.send_json(state)
     except WebSocketDisconnect:
-        active_websockets.remove(websocket)
+        pass
+    except Exception:
+        logger.warning("WebSocket handler error (removing socket)", exc_info=True)
+    finally:
+        active_websockets.discard(websocket)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # --- Device endpoints ---

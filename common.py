@@ -142,6 +142,16 @@ class PendingResponse:
         if future is not None and not future.done():
             future.set_result(True)
 
+    def remove(self, device_id: str) -> None:
+        """Cancel and drop a pending future for *device_id*.
+
+        Used on abnormal command exits so a registered-but-never-waited
+        future does not stay referenced forever (memory leak).
+        """
+        future = self._futures.pop(device_id, None)
+        if future is not None and not future.done():
+            future.cancel()
+
     @property
     def active_device_ids(self) -> Set[str]:
         """Return the set of device IDs currently being waited on."""
