@@ -125,6 +125,11 @@
             const wsUrl = `${protocol}//${window.location.host}/ws${AUTH_TOKEN ? '?token=' + AUTH_TOKEN : ''}`;
             ws = new WebSocket(wsUrl);
             
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                ws.send(JSON.stringify({type: 'request_full_state'}));
+            };
+            
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 if (data.type === 'full_state') {
@@ -142,21 +147,23 @@
                 }
             };
             
+            function scheduleReconnect() {
+                if (ws.reconnectScheduled) return;
+                ws.reconnectScheduled = true;
+                setTimeout(() => {
+                    ws.reconnectScheduled = false;
+                    connectWebSocket();
+                }, 5000);
+            }
+            
             ws.onerror = (err) => {
-                console.log('WebSocket error - showing auth modal');
-                const modal = document.getElementById('auth-modal');
-                console.log('Modal element:', modal);
-                if (modal) {
-                    modal.style.display = 'block';
-                    console.log('Modal display set to block');
-                } else {
-                    console.error('auth-modal element not found in DOM!');
-                }
+                console.log('WebSocket error, scheduling reconnect');
+                scheduleReconnect();
             };
             
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                ws.send(JSON.stringify({type: 'request_full_state'}));
+            ws.onclose = () => {
+                console.log('WebSocket closed, scheduling reconnect');
+                scheduleReconnect();
             };
         }
 

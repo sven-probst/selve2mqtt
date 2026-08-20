@@ -8,6 +8,7 @@ from selve.util.protocol import MovementState, CommunicationType
 from selve.util import SelveTypes
 from translations import TRANSLATIONS
 from common import BaseComponent, setup_logger, PendingResponse
+from web_app import safe_send_ws, _drop_ws
 
 from pydantic import BaseModel
 from models import (
@@ -990,62 +991,50 @@ class SelveManager(BaseComponent):
             "overload": state.overload,
             "auto_mode": state.auto_mode,
         }
-        dead = []
         for ws in list(self.active_websockets):
             try:
-                await ws.send_json(payload)
+                await safe_send_ws(ws, payload)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.active_websockets.discard(ws)
+                pass  # dead socket already dropped in safe_send_ws
 
     async def broadcast_gateway_ws(self, duty_cycle: int, duty_blocked: bool):
         """Send gateway diagnostics to all connected WebSocket clients."""
-        dead = []
         for ws in list(self.active_websockets):
             try:
-                await ws.send_json({
+                await safe_send_ws(ws, {
                     "type": "gateway_update",
                     "duty_cycle": duty_cycle,
                     "duty_blocked": duty_blocked,
                 })
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.active_websockets.discard(ws)
+                pass
 
     async def broadcast_sensor_ws(self, sensor, value):
         """Send sensor update to all connected WebSocket clients."""
         sens_id = str(sensor.id)
         meta = self._get_sensor_metadata(sensor)
-        dead = []
         for ws in list(self.active_websockets):
             try:
-                await ws.send_json({
+                await safe_send_ws(ws, {
                     "type": "sensor_update",
                     "id": sens_id,
                     "value": value,
                     "unit": meta["unit"],
                 })
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.active_websockets.discard(ws)
+                pass
 
     async def broadcast_sender_ws(self, sender_id: str, event_code: int):
         """Send sender event to all connected WebSocket clients."""
-        dead = []
         for ws in list(self.active_websockets):
             try:
-                await ws.send_json({
+                await safe_send_ws(ws, {
                     "type": "sender_update",
                     "id": sender_id,
                     "event": event_code,
                 })
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.active_websockets.discard(ws)
+                pass
 
     # ------------------------------------------------------------------
     # Gateway state refresh

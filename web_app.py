@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
-from typing import Set, Optional
+import threading
+from typing import Set, Optional, Dict
 from pathlib import Path
 from functools import lru_cache
 from contextlib import asynccontextmanager
@@ -62,27 +64,65 @@ def verify_token(
     return False
 
 
+# Shared per-socket send locks so concurrent broadcasts never write to the
+# same WebSocket at once (Starlette allows only one send at a time).
+_ws_send_locks: Dict[WebSocket, "asyncio.Lock"] = {}
+_ws_locks_guard = threading.Lock()
+
+
+def _get_ws_lock(ws: WebSocket) -> "asyncio.Lock":
+    with _ws_locks_guard:
+        lock = _ws_send_locks.get(ws)
+        if lock is None:
+            lock = asyncio.Lock()
+            _ws_send_locks[ws] = lock
+        return lock
+
+
+def _drop_ws(ws: WebSocket) -> None:
+    """Remove a WebSocket from tracking (and its send lock)."""
+    active_websockets.discard(ws)
+    with _ws_locks_guard:
+        _ws_send_locks.pop(ws, None)
+
+
+async def safe_send_ws(ws: WebSocket, payload: dict) -> None:
+    """Send a JSON payload to one WebSocket, serialized per socket.
+
+    The sender acquires a per-socket lock, so concurrent buffer overflows and
+    interleaved frames are avoided. On failure the socket is dropped so a dead
+    client cannot linger in the set (memory leak).
+    """
+    lock = _get_ws_lock(ws)
+    async with lock:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            _drop_ws(ws)
+            raise
+
+
 async def broadcast_status_update(message_type: str, data: dict):
     """Broadcasts a status update to all connected WebSockets."""
     if not active_websockets:
         return
     payload = {"type": message_type, **data}
-    dead = []
     for ws in list(active_websockets):
         try:
-            await ws.send_json(payload)
+            await safe_send_ws(ws, payload)
         except Exception:
-            dead.append(ws)
-    for ws in dead:
-        active_websockets.discard(ws)
+            pass  # dead socket already dropped in safe_send_ws
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     for ws in list(active_websockets):
-        active_websockets.discard(ws)
-        await ws.close()
+        _drop_ws(ws)
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="Selve2MQTT Bridge", lifespan=lifespan)
@@ -213,15 +253,15 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
             if msg.get('type') == 'request_full_state':
                 state = manager.get_full_state()
                 state['mqtt_connected'] = app.state.mqtt_client.is_connected
-                await websocket.send_json(state)
+                await safe_send_ws(websocket, state)
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.warning("WebSocket handler error (removing socket)", exc_info=True)
     finally:
-        active_websockets.discard(websocket)
+        _drop_ws(websocket)
         try:
-            await websocket.close()
+            await websocket.close(code=1000)
         except Exception:
             pass
 
