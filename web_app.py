@@ -79,8 +79,14 @@ def _get_ws_lock(ws: WebSocket) -> "asyncio.Lock":
         return lock
 
 
-def _drop_ws(ws: WebSocket) -> None:
-    """Remove a WebSocket from tracking (and its send lock)."""
+def _remove_ws(ws: WebSocket) -> None:
+    """Drop a WebSocket from tracking (and its send lock).
+
+    Only used at genuine connection teardown (endpoint exit / lifespan). A
+    Broadcast must NOT remove a socket here: a transient send error does not
+    mean the client is gone – removing it would silently kill live updates
+    while the socket stays connected.
+    """
     active_websockets.discard(ws)
     with _ws_locks_guard:
         _ws_send_locks.pop(ws, None)
@@ -89,17 +95,13 @@ def _drop_ws(ws: WebSocket) -> None:
 async def safe_send_ws(ws: WebSocket, payload: dict) -> None:
     """Send a JSON payload to one WebSocket, serialized per socket.
 
-    The sender acquires a per-socket lock, so concurrent buffer overflows and
-    interleaved frames are avoided. On failure the socket is dropped so a dead
-    client cannot linger in the set (memory leak).
+    The sender acquires a per-socket lock so concurrent buffer overflows and
+    interleaved frames are avoided. A single failed send does NOT remove the
+    socket from tracking; real teardown is handled by the endpoint itself.
     """
     lock = _get_ws_lock(ws)
     async with lock:
-        try:
-            await ws.send_json(payload)
-        except Exception:
-            _drop_ws(ws)
-            raise
+        await ws.send_json(payload)
 
 
 async def broadcast_status_update(message_type: str, data: dict):
@@ -111,14 +113,14 @@ async def broadcast_status_update(message_type: str, data: dict):
         try:
             await safe_send_ws(ws, payload)
         except Exception:
-            pass  # dead socket already dropped in safe_send_ws
+            logger.debug("WebSocket send failed, socket left for endpoint cleanup", exc_info=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     for ws in list(active_websockets):
-        _drop_ws(ws)
+        _remove_ws(ws)
         try:
             await ws.close()
         except Exception:
@@ -259,7 +261,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
     except Exception:
         logger.warning("WebSocket handler error (removing socket)", exc_info=True)
     finally:
-        _drop_ws(websocket)
+        _remove_ws(websocket)
         try:
             await websocket.close(code=1000)
         except Exception:

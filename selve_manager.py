@@ -8,7 +8,7 @@ from selve.util.protocol import MovementState, CommunicationType
 from selve.util import SelveTypes
 from translations import TRANSLATIONS
 from common import BaseComponent, setup_logger, PendingResponse
-from web_app import safe_send_ws, _drop_ws
+from web_app import safe_send_ws
 
 from pydantic import BaseModel
 from models import (
@@ -995,7 +995,7 @@ class SelveManager(BaseComponent):
             try:
                 await safe_send_ws(ws, payload)
             except Exception:
-                pass  # dead socket already dropped in safe_send_ws
+                pass  # left connected; cleanup handled by the endpoint
 
     async def broadcast_gateway_ws(self, duty_cycle: int, duty_blocked: bool):
         """Send gateway diagnostics to all connected WebSocket clients."""
