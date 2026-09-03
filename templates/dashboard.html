@@ -122,7 +122,9 @@
         
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws${AUTH_TOKEN ? '?token=' + AUTH_TOKEN : ''}`;
+            // Always carry the token into the WebSocket URL. Without it the
+            // server closes with 1008 and the UI stays empty.
+            const wsUrl = `${protocol}//${window.location.host}/ws${AUTH_TOKEN ? '?token=' + encodeURIComponent(AUTH_TOKEN) : ''}`;
             ws = new WebSocket(wsUrl);
             
             ws.onopen = () => {
@@ -161,7 +163,11 @@
                 scheduleReconnect();
             };
             
-            ws.onclose = () => {
+            ws.onclose = (ev) => {
+                // Server rejects the connection when the token is missing/wrong (1008)
+                if (ev && ev.code === 1008) {
+                    document.getElementById('auth-modal').style.display = 'block';
+                }
                 console.log('WebSocket closed, scheduling reconnect');
                 scheduleReconnect();
             };
