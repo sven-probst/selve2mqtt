@@ -9,7 +9,14 @@ __pycache__/
 *$py.class
 .venv/
 venv/
+.ruff_cache/
+.kilo/
+.continue/
 
 # Local configuration and secrets
 config.yaml
 *.log
+
+# Large spec/docs that are not needed in the image
+USB-RF-Stick_*.pdf
+USB-RF-Stick_*.txt

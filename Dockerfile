@@ -2,14 +2,17 @@ FROM python:3.12-slim-trixie AS builder
 
 WORKDIR /app
 
+# OS packages (build-essential is needed to compile any missing binary wheels).
+# apt-get upgrade is kept so security fixes land in the final image.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends build-essential
 
+# Install Python deps in a separate stage-cached layer so app code changes
+# do not re-run pip.
 COPY requirements.txt .
-
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -26,6 +29,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
+# Runner stage: only needs curl for healthcheck; skip build-essential.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
