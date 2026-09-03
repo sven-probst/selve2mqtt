@@ -20,7 +20,7 @@ Selve2MQTT is a bridge that connects a **Selve USB-RF Gateway** to an MQTT broke
 - **Command Serialisation:** Automatic queue delay between gateway commands to prevent "Command overwritten" races.
 - **Keepalive / Reconnect:** Automatic pings and reconnection handling for the Selve gateway.
 - **Docker / Podman ready:** Official container image with health checks.
-- **i18n:** Fully translated UI and log messages in German and English.
+- **i18n:** Fully translated UI and log messages in 7 languages (German, English, Spanish, French, Dutch, Portuguese, Italian).
 
 ## Hardware Requirements
 
@@ -390,7 +390,7 @@ The bridge provides a comprehensive HTTP API (all endpoints under `/api/`). Belo
 ### Health Endpoint
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check (returns `{"status": "healthy", "mqtt": true, "selve": true}`) |
+| GET | `/health` | Health check. Returns HTTP 200 with `{"status": "healthy", "mqtt": true, "selve": true}` when both MQTT and the Selve gateway are OK, otherwise HTTP 503 with `{"status": "unhealthy", "mqtt": false, "selve": true}` |
 
 ## WebSocket Protocol
 

@@ -309,7 +309,7 @@ class DeviceState(BaseModel):
     )
     name: str = Field(default="Unknown", description="Human-readable device name/label.")
     unreachable: bool = Field(default=False, description="Device is not reachable.")
-    obstrucated: bool = Field(default=False, description="Device movement is obstructed.")
+    obstructed: bool = Field(default=False, description="Device movement is obstructed.")
     overload: bool = Field(default=False, description="Device reports overload.")
     auto_mode: bool = Field(default=False, description="Automatic mode is enabled.")
     selve_raw_value: int = Field(default=0, ge=0, le=100, description="Raw Selve position (0=open, 100=closed).")

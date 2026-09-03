@@ -27,7 +27,7 @@ selve:
 logging:
   level: "INFO"            # DEBUG, INFO, WARNING, ERROR
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-language: "de"             # de, en
+language: "de"             # Language code: de, en, es, fr, nl, pt, it
 
 discovery_interval: 60      # Seconds between discovery runs (0 = disabled)
 update_interval: 30         # Seconds between state updates
