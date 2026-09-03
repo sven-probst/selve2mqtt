@@ -164,8 +164,10 @@
             };
             
             ws.onclose = (ev) => {
-                // Server rejects the connection when the token is missing/wrong (1008)
-                if (ev && ev.code === 1008) {
+                // Server rejects the connection when the token is missing/wrong.
+                // Starlette closes before accept(), so the browser only sees an
+                // abnormal closure (code 1006), never 1008.
+                if (!AUTH_TOKEN || (ev && (ev.code === 1008 || ev.code === 1006))) {
                     document.getElementById('auth-modal').style.display = 'block';
                 }
                 console.log('WebSocket closed, scheduling reconnect');
