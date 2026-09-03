@@ -221,14 +221,21 @@ def get_dashboard_html(lang_code):
     t['app_version'] = _app_version
     html = get_template()
     html = html.replace("__TITLE__", t.get('title', 'Selve2MQTT'))
+    # Replace __I18N__ FIRST so the JSON blob is safe from the {key} loop below.
     html = html.replace("__I18N__", json.dumps(t))
-    html = html.replace("{{", "{").replace("}}", "}")
+    # Only perform {placeholder} substitution on everything BEFORE the <script>
+    # tag. Placeholders inside JavaScript/template literals must stay untouched,
+    # otherwise JS like ${id} or ${protocol} can be corrupted.
+    marker_end = html.find("<script>")
+    head_part = html[:marker_end]
+    tail_part = html[marker_end:] if marker_end != -1 else ""
+    head_part = head_part.replace("{lang_code}", lang_code)
     for key, val in t.items():
         try:
-            html = html.replace("{" + key + "}", str(val))
+            head_part = head_part.replace("{" + key + "}", str(val))
         except Exception:
             pass
-    return html
+    return head_part + tail_part
 
 
 @app.get("/", response_class=HTMLResponse)
